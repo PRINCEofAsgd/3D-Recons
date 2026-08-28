@@ -1,0 +1,95 @@
+# 版本控制迁移残留
+.svn/
+
+# Python 环境、解释器缓存与工具缓存
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+
+# Python 构建、安装与测试报告
+build/
+dist/
+site/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+pytest-report.html
+junit*.xml
+
+# 通用本机构建产物
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+cmake_install.cmake
+Makefile
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.app/
+*.dSYM/
+*.pdb
+
+# 项目运行、诊断和临时输出；正式数据统一写入 data/
+archive/
+outputs/
+reports/
+Code/StoreVision/output/
+Code/StoreVision/output_*/
+
+# 日志、临时文件与崩溃转储
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.pid
+*.dmp
+*.core
+*~
+
+# 操作系统与 IDE 本地状态
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.code-workspace
+
+# 本地凭据和敏感配置；可提交脱敏示例
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+
+# data/ 与 archive/ 不做通配忽略：经确认可交付的数据应纳入版本控制。

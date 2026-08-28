@@ -1,0 +1,21 @@
+{
+  "camera_groups": [
+    {
+      "group_id": "camera_model_A",
+      "camera_model": "PINHOLE",
+      "width": 3840,
+      "height": 2160,
+      "params": {
+        "fx": null,
+        "fy": null,
+        "cx": null,
+        "cy": null
+      },
+      "distortion": null,
+      "sharing_basis": null,
+      "images": [
+        "camera_01.jpg"
+      ]
+    }
+  ]
+}
