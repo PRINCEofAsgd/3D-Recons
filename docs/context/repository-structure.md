@@ -14,19 +14,22 @@
 - [macOS 版本说明](../user/macos-release-notes.md)
 - [Windows 版本说明](../user/windows-release-notes.md)
 - [移动平台版本说明](../user/mobile-release-notes.md)
-- [COLMAP 标定说明](../../Code/StoreVision/docs/calibration_demo.md)
+- [需求评审](../design/01_requirements_review.md)
+- [算法设计](../design/02_algorithm_design.md)
+- [测试计划](../design/03_test_plan.md)
+- [COLMAP 标定说明](../design/calibration_demo.md)
 
 ## 顶层目录
 
 ```text
-3DReconstruction/
+3D-Recons/
 ├── AGENTS.md
 ├── README.md
 ├── .gitignore
-├── Code/StoreVision/
-│   ├── src/store_vision/
+├── code/
+│   ├── store_vision/
+│   │   └── examples/              # 可随包分发的配置示例
 │   ├── tests/
-│   ├── docs/
 │   ├── main.py
 │   └── pyproject.toml
 ├── data/
@@ -37,16 +40,17 @@
 ├── archive/                       # 可跟踪的历史数据，不得被正式代码依赖
 └── docs/
     ├── context/
+    ├── design/                     # 专项设计与标定说明
     ├── user/
     └── record/
 ```
 
-正式业务代码只有 `Code/StoreVision/src/store_vision`，正式测试只有 `Code/StoreVision/tests`。`data/` 与 `archive/` 默认可跟踪；`data/` 只保存已授权的当前输入和最新口径产物，`archive/` 只保存不参与运行的历史数据。
+`code/` 是唯一 Python 项目根目录，`store_vision/` 是可安装包，`tests/` 与包并列。配置示例位于包内 `examples/`，可随安装包分发；`docs/design/` 保存四份专项文档。`data/` 的真实输入和运行产物默认被 Git 忽略，只跟踪结构说明与 `apple_exam` 示例；`archive/` 可跟踪但正式代码和测试不得依赖。
 
 ## 源码模块
 
 ```text
-src/store_vision/
+store_vision/
 ├── __init__.py                    # 包版号
 ├── __main__.py                    # python -m 入口
 ├── cli.py                         # CLI 与 GUI/headless 分派
@@ -54,6 +58,7 @@ src/store_vision/
 ├── pipeline.py                    # 兼容 headless 流水线
 ├── resolution.py                  # 异分辨率坐标转换与输入预检
 ├── assets/                        # 桌面图标
+├── examples/                      # 相机内参配置示例
 ├── data/
 │   ├── models.py                  # 数据模型
 │   ├── loader.py                  # 标定、图片与平面图加载
@@ -164,7 +169,7 @@ data/stitching_output/<dataset>/run_<time>/
 └── cameras/
 ```
 
-各层 `run_*` 防覆盖。提交时同一数据集和输出层只保留当前版本需要的最新运行；旧运行移入 `archive/` 或删除。
+各层 `run_*` 防覆盖。数据包默认只保存在本地；旧运行可移入 `archive/` 或删除。
 
 ## 程序入口
 
@@ -231,10 +236,10 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.2`，平台展示版号为 `V1.0.2_20260824`。修改时同步检查：
+当前代码版号为 `1.0.3`，平台展示版号为 `V1.0.3_20261005`。修改时同步检查：
 
-- `Code/StoreVision/pyproject.toml`
-- `Code/StoreVision/src/store_vision/__init__.py`
-- `Code/StoreVision/src/store_vision/calibration/shared_calibration.py`
+- `code/pyproject.toml`
+- `code/store_vision/__init__.py`
+- `code/store_vision/calibration/shared_calibration.py`
 - `docs/user/*-release-notes.md`
 - `docs/context/project-context.md`

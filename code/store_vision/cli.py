@@ -98,7 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _default_dataset() -> Path | None:
     """只自动发现中性示例数据，正式数据应通过 ``--dataset`` 显式传入。"""
 
-    repository = Path(__file__).resolve().parents[4]
+    # 单层 code/ 项目中，CLI 模块上两级即仓库根目录。
+    repository = Path(__file__).resolve().parents[2]
     candidates = (
         Path.cwd() / "sample_store",
         Path.cwd() / "data" / "input" / "sample_store",

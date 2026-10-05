@@ -11,7 +11,7 @@
 - [docs/user/development.md](docs/user/development.md)
 - [docs/context/project-context.md](docs/context/project-context.md)
 - [docs/user/user.md](docs/user/user.md)
-- [Code/StoreVision/src/store_vision](Code/StoreVision/src/store_vision)
+- [code/store_vision](code/store_vision)
 - [docs/record](docs/record)
 - 各平台版本说明与 [.gitignore](.gitignore)
 
@@ -40,7 +40,7 @@
 - 不提交个人信息、凭据、访问令牌、本机绝对路径、真实账户/设备标识、未授权业务数据或其他项目资料。
 - 不保存学习笔记、模型对话、调研草稿、无效尝试、外部软件分发包和临时评审记录。
 - 测试必须使用合成或完成去标识化的数据；真实数据只可在已授权的本地环境临时使用。
-- `data/` 不做通配忽略，允许提交经确认可交付的当前数据；同一数据集、同一输出层只保留当前版本所需的最新口径。
+- `data/` 各层数据包默认忽略，只跟踪目录结构、各层 `structure.md` 和 `data/input/apple_exam/` 示例；真实输入与运行产物仅在本地使用。
 - `archive/` 保存需要留档的历史数据且不做通配忽略，正式代码、测试和文档不得依赖其中内容。
 - 构建产物、虚拟环境、缓存、日志和临时输出必须由 `.gitignore` 覆盖。
 

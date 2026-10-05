@@ -83,7 +83,8 @@ def find_project_root(path: str | Path | None) -> Path | None:
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
-        if (candidate / "Code" / "StoreVision" / "pyproject.toml").is_file():
+        # 以新的单层 code/ 打包配置识别仓库，避免误认普通数据目录。
+        if (candidate / "code" / "pyproject.toml").is_file():
             return candidate
     return None
 

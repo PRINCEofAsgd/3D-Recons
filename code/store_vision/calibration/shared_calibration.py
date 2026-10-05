@@ -36,7 +36,7 @@ from store_vision.data.loader import (
 from store_vision.resolution import canonicalize_homographies
 
 
-EXPERIMENT_VERSION = "V1.0.2_20260824"
+EXPERIMENT_VERSION = "V1.0.3_20261005"
 
 
 @dataclass(frozen=True)
@@ -1027,9 +1027,9 @@ def run_shared_intrinsics_calibration(
             (
                 parent
                 for parent in Path(__file__).resolve().parents
-                if (parent / "Code" / "StoreVision").is_dir()
+                if (parent / "code" / "pyproject.toml").is_file()
             ),
-            Path(__file__).resolve().parents[5],
+            Path(__file__).resolve().parents[3],
         )
     )
     calibration_path = find_calibration_path(

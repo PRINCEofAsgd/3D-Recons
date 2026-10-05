@@ -9,8 +9,9 @@ from pathlib import Path
 def _default_output_root() -> Path:
     """返回兼容旧完整流水线的输出根目录。"""
 
-    repository = Path(__file__).resolve().parents[4]
-    if (repository / "Code" / "StoreVision").is_dir():
+    # 代码包与 tests 并列于 code/，上两级是仓库根目录。
+    repository = Path(__file__).resolve().parents[2]
+    if (repository / "code" / "pyproject.toml").is_file():
         return repository / "outputs"
     return Path("outputs")
 
@@ -18,8 +19,9 @@ def _default_output_root() -> Path:
 def _default_workspace_data_root() -> Path:
     """返回统一输入、中间层和两类业务输出的 data 根目录。"""
 
-    repository = Path(__file__).resolve().parents[4]
-    if (repository / "Code" / "StoreVision").is_dir():
+    # 与输出根目录使用同一仓库定位规则。
+    repository = Path(__file__).resolve().parents[2]
+    if (repository / "code" / "pyproject.toml").is_file():
         return repository / "data"
     return Path("data")
 

@@ -54,11 +54,10 @@ Makefile
 *.pdb
 
 # 项目运行、诊断和临时输出；正式数据统一写入 data/
-archive/
 outputs/
 reports/
-Code/StoreVision/output/
-Code/StoreVision/output_*/
+code/output/
+code/output_*/
 
 # 日志、临时文件与崩溃转储
 *.log
@@ -92,4 +91,21 @@ Desktop.ini
 credentials*.json
 secrets*.json
 
-# data/ 与 archive/ 不做通配忽略：经确认可交付的数据应纳入版本控制。
+# data/ 只跟踪各层结构说明及已批准的 apple_exam 示例。
+# 逐层排除数据包，避免运行产物和真实输入进入提交。
+data/*
+!data/structure.md
+!data/input/
+!data/intermediate/
+!data/map25d_output/
+!data/stitching_output/
+data/input/*
+!data/input/structure.md
+!data/input/apple_exam/
+!data/input/apple_exam/**
+data/intermediate/*
+!data/intermediate/structure.md
+data/map25d_output/*
+!data/map25d_output/structure.md
+data/stitching_output/*
+!data/stitching_output/structure.md

@@ -502,7 +502,8 @@ def run_geometry_diagnostics(request: GeometryDiagnosticsRequest) -> dict[str, A
             name: (int(image.width or 0), int(image.height or 0))
             for name, image in database.images.items()
         }
-        template = Path(__file__).resolve().parents[3] / "config" / "camera_intrinsics.example.json"
+        # 示例配置作为包数据随安装分发，诊断报告可始终指向可用模板。
+        template = Path(__file__).resolve().parents[1] / "examples" / "camera_intrinsics.example.json"
         intrinsics = load_and_validate_intrinsics(request.intrinsics_config, available_images, template_path=template)
         controlled = _controlled_experiment_plan(request, intrinsics, ranking)
         _json_write(output / "controlled_experiment_plan.json", controlled)

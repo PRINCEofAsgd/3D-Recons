@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "store-vision"
-version = "1.0.2"
+version = "1.0.3"
 description = "多相机门店标定、白色桌子检测、2.5D 地图与俯视拼接原型"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -27,10 +27,11 @@ colmap = ["pycolmap>=0.6"]
 store-vision = "store_vision.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["store_vision*"]
 
 [tool.setuptools.package-data]
-store_vision = ["assets/*.png", "assets/*.icns"]
+store_vision = ["assets/*.png", "assets/*.icns", "examples/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

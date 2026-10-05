@@ -59,10 +59,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def repository_root() -> Path:
-    """返回包含 ``Code/StoreVision`` 的仓库根目录。"""
+    """返回包含 ``code/pyproject.toml`` 的仓库根目录。"""
 
-    root = Path(__file__).resolve().parents[5]
-    if not (root / "Code" / "StoreVision").is_dir():
+    # data 子包位于 code/store_vision/data，上三级是仓库根目录。
+    root = Path(__file__).resolve().parents[3]
+    if not (root / "code" / "pyproject.toml").is_file():
         raise RuntimeError(f"无法定位 Store Vision 仓库根目录：{root}")
     return root
 

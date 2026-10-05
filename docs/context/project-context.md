@@ -1,5 +1,21 @@
 # 项目上下文
 
+## Step 4：数据层级归位与 Python 项目扁平化（2026-10-05）
+
+### 目标与结果
+
+- 将本机源目录中的九组数据包复制到 `data/input/`，共核对 259 个有效文件的逐文件 SHA-256；系统缩略图和目录状态文件未复制。`Decathon_amiens` 规范为 `Decathon_Amiens`，中文标定、尺度、平面图与截图目录名统一为程序支持的 `cali.json`、`scale.json`、`floorplan.*` 和 `screenshots/`。旧 `decathon` 截图尾部采集时间戳已移除，原相机 ID 和图像字节保持不变。
+- 九组包只含原始截图、人工标定、尺度或平面图及可选 CAD 辅助资料，没有中间层 `manifest.json` 与候选合同，因此全部归入 input；本次没有可归入 intermediate 的源包。
+- `apple_bj_fyh` 和 `decathon` 缺少 `scale` 文件，保持原样并在输入结构文档标明，不能作为完整数据集直接运行。其余七组具备输入合同的四类必需文件。
+- Python 项目扁平化为 `code/store_vision/` 与 `code/tests/` 并列；四份专项文档归入 `docs/design/`，相机内参示例归入包内 `examples/`。路径定位、打包发现、测试夹具、文档命令和平台版号同步更新。
+- `data/` 数据包默认被 Git 忽略，仅保留结构说明与 `input/apple_exam/` 示例；`archive/` 不做通配忽略。版本更新为 `V1.0.3_20261005`。
+
+### 验证与边界
+
+- 142 项合成夹具自动化测试通过；源码编译、CLI 帮助、离线 wheel 构建与源数据哈希比对通过。
+- 本机软件源不可访问，新的独立 `.venv` 未完成依赖安装；自动化测试使用本机已有 Python 3.14 环境并以新 `code/` 为导入路径。Windows 与 Intel Mac 仍待实机验证。
+- 旧 Step 3 的待恢复列表为当时历史状态；当前源目录没有 `intermediate`、`map25d_output` 或 `stitching_output` 运行包，本次未补造产物。`Huawei_Wangfujing` 按源包身份保留，未擅自等同于历史清单中的 `Huawei_Beijing`。
+
 ## Step 3：正式交付整理与版本库重建（2026-08-24）
 
 ### 目标与结果

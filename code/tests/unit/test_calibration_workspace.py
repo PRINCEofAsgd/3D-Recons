@@ -94,8 +94,8 @@ def test_unique_run_paths_never_reuse_existing_directory(tmp_path):
 def test_legacy_repository_reports_are_not_mixed_across_datasets(tmp_path):
     """自动兼容仓库级 V0.4 报告时必须确认其审计目标属于当前门店。"""
 
-    (tmp_path / "Code" / "StoreVision").mkdir(parents=True)
-    (tmp_path / "Code" / "StoreVision" / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "code").mkdir(parents=True)
+    (tmp_path / "code" / "pyproject.toml").write_text("", encoding="utf-8")
     current_dataset = tmp_path / "data" / "current"
     other_dataset = tmp_path / "data" / "other"
     current_dataset.mkdir(parents=True)
@@ -112,8 +112,8 @@ def test_legacy_repository_reports_are_not_mixed_across_datasets(tmp_path):
 def test_fisheye_result_is_discovered_and_normalized_for_same_dataset(tmp_path):
     """鱼眼结果自动发现后应形成六阶段、共享 K/D 和逐机位姿视图。"""
 
-    (tmp_path / "Code" / "StoreVision").mkdir(parents=True)
-    (tmp_path / "Code" / "StoreVision" / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "code").mkdir(parents=True)
+    (tmp_path / "code" / "pyproject.toml").write_text("", encoding="utf-8")
     dataset = tmp_path / "data" / "shop"
     dataset.mkdir(parents=True)
     result = tmp_path / "outputs" / "shop" / "fisheye_calibration" / "run_001"
