@@ -1,5 +1,33 @@
 # 项目上下文
 
+## Step 7：云端 Phase 3 Ray 逐相机拼接（2026-10-06）
+
+### 目标与结果
+
+- 原参数拼接提取共同画布预检与纯逐相机去畸变/投影/有效掩膜/羽化权重函数，串行与 Ray 复用同一计算；覆盖、融合、裁剪和业务 manifest 仍按固定相机顺序全局汇总。
+- 新增 Ray 限流调度、显式 CPU/GPU/内存申请、按相机独立 attempt 分片及 SHA-256 清单。所有必需分片通过身份、候选、画布、尺寸和字节校验后才汇总；worker 故障/暂态读取只重试该相机，重试耗尽或合同错误不发布。Phase 2 执行器设置 `SV_RAY_ADDRESS` 时接入，未设置时串行回退；2.5D 与共享标定保持原全局链路。
+- `V1.0.6_20261006`。目录与调用链见[结构文档](repository-structure.md)，启动、资源和合成实验见[开发指南](../user/development.md)，分片字段和失败语义见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
+
+### 验证与边界
+
+- 本机 macOS ARM64、Python 3.14、Ray 2.59.0、九张 2560×1440 合成图片、100×68 工作画布、2 CPU/0 GPU、每 task 256 MiB 资源申请和最多 2 个在途：两个不同 worker PID 在一个物理节点完成九个 task。原版串行代码、重构后串行和 Ray 的工作画布、裁剪尺寸 100×51、覆盖 4211 像素、重叠 3835 像素、相机统计与三张对照图片逐像素一致，融合 JPEG 字节 SHA-256 相同。单相机注入失败后仅该机由 attempt 0 转 attempt 1；重试耗尽时无成功 manifest，重复目标输出被拒绝。
+- 全量 Python 回归 152 项通过（含 Ray 合成集成 3 项）；Go 单元测试通过，源码编译和 Git diff 检查通过。最后一次合成集成运行测得串行拼接 0.186 秒、Ray 启动 3.462 秒、已启动 Ray 的拼接运行含一次相机重试 0.142 秒；只供该小画布本机样例参考，不代表通用加速。真实 S3 传输、更多相机和更大画布可能转移瓶颈。
+- 开发指南中的 Ray CLI 本机合成命令已实际执行：启动本地两 CPU Ray、九相机拼接、串行对照和停止均成功；两种输出的画布、裁剪、统计、逐机报告与融合 JPEG 哈希一致，九个 task 落在两个不同 worker PID。自定义 Ray 临时目录需同时传给 CLI 的 `--ray-temp-dir` 或 Phase 2 执行器的 `SV_RAY_TEMP_DIR`。
+- 物理多节点、真实 MinIO/MySQL 控制面联调、外部强杀 Ray worker 和 Windows/Intel Mac 尚未验证。Phase 2 的真实依赖限制仍见 Step 6；未提前接入 Argo。
+
+## Step 6：云端 Phase 2 对象存储与最小控制面（2026-10-06）
+
+### 目标与结果
+
+- 新增带前缀隔离、条件写、SHA-256/大小复核的 S3 兼容存储适配；Phase 1 快照、run 和 artifact 合同可经 MinIO URI 跨 scratch 使用，两个结果校验后创建已发布指针。
+- 新增 Go API、MySQL migration 和独立轮询执行器，提供 Dataset 注册、Job 提交/查询、Artifact 查询与取消请求。Job 唯一键实现幂等，版本/attempt 条件更新保护终态，运行中取消只登记意图。
+- 本地 Compose 固定 MySQL/MinIO 镜像，凭据仅从忽略的 `.env`/环境变量获取。合成样例、启动/迁移/查询/清理命令见开发指南；职责、状态和一致性边界见[Phase 2 合同](../design/cloud-pipeline/contracts-phase2.md)。版本更新为 `V1.0.5_20261006`。
+
+### 验证与边界
+
+- 离线 S3 故障测试 3 项通过；Go 控制面单元测试 4 项通过，竞态检查和 `go vet` 通过；Python 编译检查通过。真实 MySQL 并发测试已提供并跳过：本机 Docker daemon 无法启动，因而未执行真实 MinIO/MySQL 联调、端到端合成 Job 与对象键/状态序列实测。当前 Python 环境缺项目开发依赖，Phase 1 测试无法在本次重跑；Step 5 记录的 146 项通过仍为此前验收证据。
+- S3 上传和 MySQL 状态没有跨系统事务；数据库提交失败时已上传 attempt 可能不可见，重领会使用新 attempt。API 的 HTTP 200/202 不代表算法完成。`X-Owner-ID` 仅为本地分区字段，尚无生产认证；Windows/Intel Mac 仍未实测。
+
 ## Step 5：云端 Phase 1 合同与本地适配（2026-10-05）
 
 ### 目标与结果

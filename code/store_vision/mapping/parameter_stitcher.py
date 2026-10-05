@@ -116,6 +116,17 @@ class StitchingWorkflowResult:
     intermediate_path: Path
 
 
+@dataclass(frozen=True)
+class CameraStitchPart:
+    """独立相机映射结果；数组只由全局汇总器读取。"""
+
+    camera_id: str
+    warped: np.ndarray
+    valid: np.ndarray
+    weight: np.ndarray
+    transform: np.ndarray
+
+
 def _camera_center(camera: dict[str, Any]) -> np.ndarray:
     """由 world_to_camera R/t 计算世界光心。"""
 
@@ -357,32 +368,54 @@ def _coverage_polygons(
     return polygons
 
 
-def run_parameter_stitching(
-    intermediate_path: str | Path,
-    output_dir: str | Path,
-    *,
-    candidate_name: str | None = None,
-    config: ParameterStitchConfig | None = None,
-    progress: ProgressCallback | None = None,
-) -> StitchingWorkflowResult:
-    """运行参数驱动平面映射、覆盖诊断与羽化融合。"""
+def prepare_camera_stitch_part(
+    camera: dict[str, Any],
+    image: np.ndarray,
+    canvas: WorldCanvas,
+    config: ParameterStitchConfig,
+) -> CameraStitchPart:
+    """纯逐相机计算；串行与 Ray 使用同一去畸变、投影和权重算法。"""
 
-    runtime = load_intermediate_runtime(
-        intermediate_path,
-        candidate_name=candidate_name,
+    if image is None or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"相机 {camera.get('camera_id')} 图片格式错误")
+    undistorted, new_k = model_undistort_image(image, camera)
+    transform = _image_to_canvas(camera, new_k, canvas, config.plane_z)
+    size = (canvas.width, canvas.height)
+    warped = cv2.warpPerspective(
+        undistorted, transform, size, flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
     )
+    support = cv2.warpPerspective(
+        np.full(image.shape[:2], 255, dtype=np.uint8), transform, size,
+        flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
+    )
+    valid = _front_mask(
+        support, camera, canvas, config.plane_z,
+        config.max_ground_distance_metres,
+    )
+    warped[valid == 0] = 0
+    distance = cv2.distanceTransform(valid, cv2.DIST_L2, cv2.DIST_MASK_3)
+    weight = np.minimum(
+        distance / max(config.feather_radius_pixels, 1), 1.0,
+    ).astype(np.float32)
+    return CameraStitchPart(
+        str(camera["camera_id"]), warped, valid, weight, transform,
+    )
+
+
+def prepare_stitching_runtime(
+    intermediate_path: str | Path,
+    candidate_name: str | None,
+    config: ParameterStitchConfig,
+) -> tuple[IntermediateRuntime, WorldCanvas]:
+    """驱动端验证候选与配置，并在发出任何相机任务前确定共同画布。"""
+
+    runtime = load_intermediate_runtime(intermediate_path, candidate_name=candidate_name)
     if not runtime.capabilities.stitching.ready:
-        raise ValueError(
-            "图像拼接所需中间数据不完整："
-            + "、".join(runtime.capabilities.stitching.missing)
-        )
-    config = config or ParameterStitchConfig()
+        raise ValueError("图像拼接所需中间数据不完整：" + "、".join(runtime.capabilities.stitching.missing))
     if config.pixels_per_metre <= 0:
         raise ValueError("pixels_per_metre 必须大于 0")
-    if (
-        config.fallback_radius_metres <= 0
-        or config.max_ground_distance_metres <= 0
-    ):
+    if config.fallback_radius_metres <= 0 or config.max_ground_distance_metres <= 0:
         raise ValueError("画布回退半径和地面有效半径必须大于 0")
     if config.max_canvas_long_edge <= 0 or config.max_canvas_pixels <= 0:
         raise ValueError("画布尺寸上限必须大于 0")
@@ -392,11 +425,29 @@ def run_parameter_stitching(
         raise ValueError("羽化半径和裁剪边距不能小于 0")
     if not 1 <= config.jpeg_quality <= 100:
         raise ValueError("jpeg_quality 必须在 [1, 100] 范围")
+    return runtime, _derive_canvas(runtime, config)
+
+
+def run_parameter_stitching(
+    intermediate_path: str | Path,
+    output_dir: str | Path,
+    *,
+    candidate_name: str | None = None,
+    config: ParameterStitchConfig | None = None,
+    progress: ProgressCallback | None = None,
+    part_loader: Callable[[dict[str, Any], WorldCanvas, ParameterStitchConfig], CameraStitchPart] | None = None,
+    prepared: tuple[IntermediateRuntime, WorldCanvas] | None = None,
+) -> StitchingWorkflowResult:
+    """按相机顺序汇总映射分片；默认路径逐机计算，Ray 可注入已校验分片。"""
+
+    config = config or ParameterStitchConfig()
+    runtime, canvas = prepared or prepare_stitching_runtime(
+        intermediate_path, candidate_name, config,
+    )
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     cameras_dir = output / "cameras"
     cameras_dir.mkdir(exist_ok=True)
-    canvas = _derive_canvas(runtime, config)
     height, width = canvas.height, canvas.width
 
     accumulator = np.zeros((height, width, 3), dtype=np.float32)
@@ -421,45 +472,21 @@ def run_parameter_stitching(
     if progress:
         progress(2, "已建立统一世界地面画布")
     for index, camera in enumerate(rig_cameras):
-        image_path = Path(str(camera.get("image_path", "")))
-        image = cv2.imread(str(image_path))
-        if image is None:
-            raise ValueError(
-                f"无法读取相机 {camera.get('camera_id')} 图片：{image_path}"
-            )
-        undistorted, new_k = model_undistort_image(image, camera)
-        transform = _image_to_canvas(
-            camera, new_k, canvas, config.plane_z
-        )
-        warped = cv2.warpPerspective(
-            undistorted,
-            transform,
-            (width, height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-        )
-        support = cv2.warpPerspective(
-            np.full(image.shape[:2], 255, dtype=np.uint8),
-            transform,
-            (width, height),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-        )
-        valid = _front_mask(
-            support,
-            camera,
-            canvas,
-            config.plane_z,
-            config.max_ground_distance_metres,
-        )
+        if part_loader is None:
+            image_path = Path(str(camera.get("image_path", "")))
+            image = cv2.imread(str(image_path))
+            if image is None:
+                raise ValueError(
+                    f"无法读取相机 {camera.get('camera_id')} 图片：{image_path}"
+                )
+            part = prepare_camera_stitch_part(camera, image, canvas, config)
+        else:
+            part = part_loader(camera, canvas, config)
+        camera_id = str(camera["camera_id"])
+        if part.camera_id != camera_id or part.warped.shape != (height, width, 3) or part.valid.shape != (height, width) or part.weight.shape != (height, width) or part.transform.shape != (3, 3) or part.warped.dtype != np.uint8 or part.valid.dtype != np.uint8 or part.weight.dtype != np.float32:
+            raise ValueError(f"相机 {camera_id} 分片身份、尺寸或类型不符")
+        warped, valid, weight, transform = part.warped, part.valid, part.weight, part.transform
         valid_bool = valid > 0
-        warped[~valid_bool] = 0
-        distance = cv2.distanceTransform(
-            valid, cv2.DIST_L2, cv2.DIST_MASK_3
-        )
-        weight = np.minimum(
-            distance / max(config.feather_radius_pixels, 1), 1.0
-        ).astype(np.float32)
         accumulator += warped.astype(np.float32) * weight[..., None]
         weight_sum += weight
 
@@ -482,7 +509,6 @@ def run_parameter_stitching(
             255,
         ).astype(np.uint8)
 
-        camera_id = str(camera.get("camera_id"))
         _write_image(
             cameras_dir / f"{camera_id}_warped.jpg",
             warped,

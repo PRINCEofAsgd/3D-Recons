@@ -19,6 +19,8 @@
 - [测试计划](../design/algorithm/03_test_plan.md)
 - [COLMAP 标定说明](../design/algorithm/calibration_demo.md)
 - [云端 Phase 1 合同与验收](../design/cloud-pipeline/contracts-phase1.md)
+- [云端 Phase 2 一致性与状态合同](../design/cloud-pipeline/contracts-phase2.md)
+- [云端 Phase 3 Ray 分片合同](../design/cloud-pipeline/contracts-phase3.md)
 
 ## 顶层目录
 
@@ -33,6 +35,7 @@
 │   ├── tests/
 │   ├── main.py
 │   └── pyproject.toml
+├── cloud/                       # Phase 2 Go API、worker、MySQL migration 与 Compose
 ├── data/
 │   ├── input/
 │   ├── intermediate/
@@ -55,6 +58,9 @@ store_vision/
 ├── __init__.py                    # 包版号
 ├── __main__.py                    # python -m 入口
 ├── cloud_phase1.py                # 可移植合同、本地存储与原算法适配
+├── cloud_s3.py                    # S3 签名请求、前缀隔离与字节校验
+├── cloud_phase2.py                # 快照上传与 worker 的原算法适配
+├── cloud_ray.py                   # Ray 逐相机分片、重试、校验屏障与汇总
 ├── cli.py                         # CLI 与 GUI/headless 分派
 ├── config.py                      # 阈值和数据根配置
 ├── pipeline.py                    # 兼容 headless 流水线
@@ -135,6 +141,8 @@ tests/
 pytest 只从 `tests` 收集，不读取 `data/` 或 `archive/`。
 
 `tests/unit/test_cloud_phase1.py` 用合成夹具验证快照、跨目录恢复、两个原业务消费者和合同拒绝条件。
+`tests/unit/test_cloud_s3_stdlib.py` 用合成字节验证 S3 故障边界；`tests/integration/phase2_sample.py` 生成本地验收输入。`cloud/main_test.go` 验证控制面分支，`cloud/main_integration_test.go` 可对真实 MySQL 唯一约束执行并发提交实验。
+`tests/integration/test_cloud_ray.py` 用合成图片验证串行/Ray 一致性、两个 worker 进程、逐机失败重试、分片校验与不覆盖。
 
 ## 数据合同与运行产物
 
@@ -177,6 +185,10 @@ data/stitching_output/<dataset>/run_<time>/
 
 Phase 1 本地云端合同另存于被忽略的 `outputs/` 或 `cloud-local/`：`objects/<hash-prefix>/<sha256>` 为内容寻址对象，`manifests/snapshots/<dataset>/<snapshot>/manifest.json`、`manifests/runs/<dataset>/<run>/<attempt>/manifest.json` 和 `manifests/artifacts/<dataset>/<run>/<attempt>/<artifact>/manifest.json` 为发布清单。scratch 内恢复的 v2 中间层及业务结果按 run/attempt 隔离。详见[Phase 1 合同](../design/cloud-pipeline/contracts-phase1.md)。
 
+Phase 2 远程对象键按配置前缀分为输入快照、attempt 对象、run/artifact 清单与已发布指针。`cloud/` 的 Go API 把 Dataset/Job/Stage/Artifact 元数据写入 MySQL，独立 worker 调用 Python 原算法；本地 scratch 位于被忽略的 `cloud-local/`。详见[Phase 2 合同](../design/cloud-pipeline/contracts-phase2.md)。
+
+Phase 3 在 `attempts/<job>/<run>/<candidate>/<canvas_hash>/<camera>/<task_version>/<part_attempt>/` 下保存逐机 `npz` 与清单。Ray task 从对象存储按需读取本相机图片；驱动端校验全部必需分片后按稳定顺序复用原覆盖/融合逻辑。业务 manifest 增加 `parallel_parts` 来源记录；原串行格式继续可用。详见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
+
 ## 程序入口
 
 ```text
@@ -195,6 +207,10 @@ store-vision / python -m store_vision
 `main.py` 与 `__main__.py` 只转发到 `cli.main`。
 
 `cloud_phase1` 为独立 Python API，不改 GUI/CLI 路由：输入预检 → 输入快照 → 本地物化 → 原共享标定结果发布 v2 → run 合同 → 跨目录恢复 v2 → 两个原消费者 → artifact 合同。`pipeline.py` 仍为兼容 headless 路径。
+
+Phase 2 调用链：`cloud_phase2 snapshot` → S3 快照；Go `/datasets`、`/jobs` → MySQL；独立 Go worker → `cloud_phase2 execute` → S3 attempt、清单与指针 → MySQL 终态 → `/jobs/<id>/artifacts`。本地 worker 在后续阶段可由 Argo 编排替换。
+
+Phase 3 可选调用链：`cloud_phase2 execute` → `prepare_stitching_runtime` 确定共同画布 → `cloud_ray.run_ray_stitching` 限流派发逐机 task → 分片清单与数组全量校验 → `run_parameter_stitching` 按相机顺序全局 reduce → 原 Phase 2 artifact/指针发布。无 `SV_RAY_ADDRESS` 时直接运行同一逐机函数的串行路径。
 
 ## GUI 调用链
 
@@ -244,7 +260,7 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.4`，平台展示版号为 `V1.0.4_20261005`。修改时同步检查：
+当前代码版号为 `1.0.6`，平台展示版号为 `V1.0.6_20261006`。修改时同步检查：
 
 - `code/pyproject.toml`
 - `code/store_vision/__init__.py`

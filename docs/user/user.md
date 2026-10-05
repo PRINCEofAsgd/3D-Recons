@@ -1,5 +1,13 @@
 # Store Vision 操作手册
 
+## Phase 3 可选 Ray 拼接
+
+云端执行器设置 `SV_RAY_ADDRESS` 并连接已启动的 Ray 时，拼接会在共同画布上逐相机生成分片。全部相机通过校验后才出现业务成功结果；单机失败可在新 attempt 重试。未设置该变量时维持串行路径，桌面界面也继续使用串行路径。启动命令、资源配置和合成对照见[开发指南](development.md#phase-3-ray-逐相机拼接)。
+
+## Phase 2 本地云端 Demo
+
+开发者可按[开发指南](development.md#phase-2-本地云端-demo)启动本地 MySQL/MinIO、上传合成快照、注册 Dataset、提交 Job 并轮询结果。提交响应只表示 Job 已建立；`GET /jobs/<id>` 到 `succeeded` 后，`GET /jobs/<id>/artifacts` 才返回结果清单 URI。执行期间取消会先显示 `cancel_requested`，算法可能继续运行，随后由执行器结算。该 Demo 使用本地 owner 头分区，不作为联网服务的认证方案。
+
 ## Phase 1 合成合同验收
 
 开发者可按[开发指南](development.md)运行合成样例。运行后在 `outputs/phase1-pytest/` 查看快照、run、artifact 清单及两套临时目录；原桌面端操作与现有中间层选择方式不变。合同资源校验失败会给出 `ValueError`，结果清单不会发布。该样例使用合成标定参数，仅用于验证数据边界和业务入口，不用于真实测量。
