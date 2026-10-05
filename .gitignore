@@ -55,6 +55,7 @@ Makefile
 
 # 项目运行、诊断和临时输出；正式数据统一写入 data/
 outputs/
+cloud-local/
 reports/
 code/output/
 code/output_*/

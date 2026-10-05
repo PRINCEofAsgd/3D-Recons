@@ -14,10 +14,11 @@
 - [macOS 版本说明](../user/macos-release-notes.md)
 - [Windows 版本说明](../user/windows-release-notes.md)
 - [移动平台版本说明](../user/mobile-release-notes.md)
-- [需求评审](../design/01_requirements_review.md)
-- [算法设计](../design/02_algorithm_design.md)
-- [测试计划](../design/03_test_plan.md)
-- [COLMAP 标定说明](../design/calibration_demo.md)
+- [需求评审](../design/algorithm/01_requirements_review.md)
+- [算法设计](../design/algorithm/02_algorithm_design.md)
+- [测试计划](../design/algorithm/03_test_plan.md)
+- [COLMAP 标定说明](../design/algorithm/calibration_demo.md)
+- [云端 Phase 1 合同与验收](../design/cloud-pipeline/contracts-phase1.md)
 
 ## 顶层目录
 
@@ -45,7 +46,7 @@
     └── record/
 ```
 
-`code/` 是唯一 Python 项目根目录，`store_vision/` 是可安装包，`tests/` 与包并列。配置示例位于包内 `examples/`，可随安装包分发；`docs/design/` 保存四份专项文档。`data/` 的真实输入和运行产物默认被 Git 忽略，只跟踪结构说明与 `apple_exam` 示例；`archive/` 可跟踪但正式代码和测试不得依赖。
+`code/` 是唯一 Python 项目根目录，`store_vision/` 是可安装包，`tests/` 与包并列。配置示例位于包内 `examples/`，可随安装包分发；`docs/design/algorithm/` 保存四份算法专项文档，`docs/design/cloud-pipeline/` 保存云端阶段设计与合同。`data/` 的真实输入和运行产物默认被 Git 忽略，只跟踪结构说明与 `apple_exam` 示例；`archive/` 可跟踪但正式代码和测试不得依赖。
 
 ## 源码模块
 
@@ -53,6 +54,7 @@
 store_vision/
 ├── __init__.py                    # 包版号
 ├── __main__.py                    # python -m 入口
+├── cloud_phase1.py                # 可移植合同、本地存储与原算法适配
 ├── cli.py                         # CLI 与 GUI/headless 分派
 ├── config.py                      # 阈值和数据根配置
 ├── pipeline.py                    # 兼容 headless 流水线
@@ -132,6 +134,8 @@ tests/
 
 pytest 只从 `tests` 收集，不读取 `data/` 或 `archive/`。
 
+`tests/unit/test_cloud_phase1.py` 用合成夹具验证快照、跨目录恢复、两个原业务消费者和合同拒绝条件。
+
 ## 数据合同与运行产物
 
 ```text
@@ -171,6 +175,8 @@ data/stitching_output/<dataset>/run_<time>/
 
 各层 `run_*` 防覆盖。数据包默认只保存在本地；旧运行可移入 `archive/` 或删除。
 
+Phase 1 本地云端合同另存于被忽略的 `outputs/` 或 `cloud-local/`：`objects/<hash-prefix>/<sha256>` 为内容寻址对象，`manifests/snapshots/<dataset>/<snapshot>/manifest.json`、`manifests/runs/<dataset>/<run>/<attempt>/manifest.json` 和 `manifests/artifacts/<dataset>/<run>/<attempt>/<artifact>/manifest.json` 为发布清单。scratch 内恢复的 v2 中间层及业务结果按 run/attempt 隔离。详见[Phase 1 合同](../design/cloud-pipeline/contracts-phase1.md)。
+
 ## 程序入口
 
 ```text
@@ -187,6 +193,8 @@ store-vision / python -m store_vision
 ```
 
 `main.py` 与 `__main__.py` 只转发到 `cli.main`。
+
+`cloud_phase1` 为独立 Python API，不改 GUI/CLI 路由：输入预检 → 输入快照 → 本地物化 → 原共享标定结果发布 v2 → run 合同 → 跨目录恢复 v2 → 两个原消费者 → artifact 合同。`pipeline.py` 仍为兼容 headless 路径。
 
 ## GUI 调用链
 
@@ -236,7 +244,7 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.3`，平台展示版号为 `V1.0.3_20261005`。修改时同步检查：
+当前代码版号为 `1.0.4`，平台展示版号为 `V1.0.4_20261005`。修改时同步检查：
 
 - `code/pyproject.toml`
 - `code/store_vision/__init__.py`

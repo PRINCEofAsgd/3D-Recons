@@ -28,6 +28,17 @@ python -m compileall -q store_vision tests
 store-vision --help
 ```
 
+Phase 1 云端合同本地验收（仅用合成夹具）：
+
+```bash
+cd code
+QT_QPA_PLATFORM=offscreen MPLCONFIGDIR=../outputs/matplotlib \
+  python -m pytest -q tests/unit/test_cloud_phase1.py \
+  --basetemp ../outputs/phase1-pytest
+```
+
+输出清单位于 `../outputs/phase1-pytest/test_snapshot_and_run_restore_0/store/manifests/`；`first/` 与 `second/` 是独立物化目录，后者含原 2.5D 与拼接结果。`--basetemp` 会清空目标目录。合同字段与失败条件见[Phase 1 合同](../design/cloud-pipeline/contracts-phase1.md)。本地存储根可另设为被忽略的 `cloud-local/`，不得把真实输入或产物提交。
+
 测试夹具位于 `tests/fixtures/sample_store/`，全部为去标识化合成数据。测试不得读取 `data/` 中的业务数据或 `archive/`。
 
 ## 运行
