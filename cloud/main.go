@@ -299,18 +299,18 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// claim 用版本 CAS 领取任务；过期租约可由重启后的 worker 重新领取。
+// claim 用版本 CAS 领取任务；暂态故障的 pending Job 到重试时间后才能被领取。
 func (s *server) claim(ctx context.Context) (job, uint64, bool, error) {
 	var id, who string
 	var version uint64
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,status_version FROM jobs WHERE status='pending' OR (status='running' AND lease_until<NOW(6)) ORDER BY created_at LIMIT 1`).Scan(&id, &who, &version)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,status_version FROM jobs WHERE (status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6)) ORDER BY created_at LIMIT 1`).Scan(&id, &who, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return job{}, 0, false, nil
 	}
 	if err != nil {
 		return job{}, 0, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='running',status_version=status_version+1,attempts=attempts+1,lease_until=DATE_ADD(NOW(6),INTERVAL 90 SECOND),failure_type=NULL WHERE id=? AND status_version=? AND (status='pending' OR (status='running' AND lease_until<NOW(6))) AND attempts<3`, id, version)
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='running',status_version=status_version+1,attempts=attempts+1,lease_until=DATE_ADD(NOW(6),INTERVAL 90 SECOND),failure_type=NULL WHERE id=? AND status_version=? AND ((status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6))) AND attempts<3`, id, version)
 	if err != nil {
 		return job{}, 0, false, err
 	}
@@ -386,7 +386,8 @@ func (s *server) finish(ctx context.Context, j job, attempt uint64, out result, 
 	if final == "succeeded" {
 		published = out.PublicationURI
 	}
-	changed, err := tx.ExecContext(ctx, `UPDATE jobs SET status=?,status_version=status_version+1,failure_type=?,output_manifest_uri=?,lease_until=NULL WHERE id=? AND attempts=? AND status_version=? AND status=?`, final, nullable(kind), published, j.ID, attempt, version, state)
+	// 暂态存储故障给服务恢复留出窗口；租约列在 pending 时表示下次可领取时间。
+	changed, err := tx.ExecContext(ctx, `UPDATE jobs SET status=?,status_version=status_version+1,failure_type=?,output_manifest_uri=?,lease_until=CASE WHEN ?='pending' THEN DATE_ADD(NOW(6),INTERVAL 15 SECOND) ELSE NULL END WHERE id=? AND attempts=? AND status_version=? AND status=?`, final, nullable(kind), published, final, j.ID, attempt, version, state)
 	if err != nil {
 		return err
 	}
@@ -444,7 +445,7 @@ func (s *server) worker(ctx context.Context, python, scratchRoot, report string,
 		if err = os.MkdirAll(filepath.Dir(scratch), 0700); err != nil {
 			return err
 		}
-		args := []string{"-m", "store_vision.cloud_phase2", "execute", "--snapshot-uri", j.InputManifestURI, "--run-id", j.ID, "--attempt-id", attemptID, "--scratch", scratch}
+		args := []string{"-m", "store_vision.cloud_job_runner", "execute", "--snapshot-uri", j.InputManifestURI, "--run-id", j.ID, "--attempt-id", attemptID, "--scratch", scratch}
 		if report != "" {
 			args = append(args, "--report-json", report)
 		}

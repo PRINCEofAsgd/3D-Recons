@@ -8,7 +8,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 
-from store_vision.cloud_s3 import S3ObjectStore, StorageUnavailable
+from store_vision.s3_object_store import S3ObjectStore, StorageUnavailable
 
 
 class FakeResponse:
@@ -47,7 +47,7 @@ class FakeS3:
 class S3Tests(unittest.TestCase):
     def setUp(self):
         self.fake = FakeS3()
-        self.patch = patch("store_vision.cloud_s3.urlopen", self.fake)
+        self.patch = patch("store_vision.s3_object_store.urlopen", self.fake)
         self.patch.start()
         self.store = S3ObjectStore("http://127.0.0.1:9000",
                                    "synthetic", "test-access", "test-secret", "phase2")

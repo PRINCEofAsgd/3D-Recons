@@ -6,14 +6,18 @@
 
 - 原参数拼接提取共同画布预检与纯逐相机去畸变/投影/有效掩膜/羽化权重函数，串行与 Ray 复用同一计算；覆盖、融合、裁剪和业务 manifest 仍按固定相机顺序全局汇总。
 - 新增 Ray 限流调度、显式 CPU/GPU/内存申请、按相机独立 attempt 分片及 SHA-256 清单。所有必需分片通过身份、候选、画布、尺寸和字节校验后才汇总；worker 故障/暂态读取只重试该相机，重试耗尽或合同错误不发布。Phase 2 执行器设置 `SV_RAY_ADDRESS` 时接入，未设置时串行回退；2.5D 与共享标定保持原全局链路。
-- `V1.0.6_20261006`。目录与调用链见[结构文档](repository-structure.md)，启动、资源和合成实验见[开发指南](../user/development.md)，分片字段和失败语义见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
+- 本 Step 初版为 `V1.0.6_20261006`；真实本地依赖联调为 `V1.0.8_20261008`；模块规范命名及 Phase 3 收尾为 `V1.0.9_20261008`。四个模块分别为 `cloud_workspace`、`s3_object_store`、`cloud_job_runner` 和 `ray_stitching`，Go worker、Python 命令、测试及文档引用已同步。目录与调用链见[结构文档](repository-structure.md)，启动、资源和合成实验见[开发指南](../user/development.md)，分片字段和失败语义见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
 
 ### 验证与边界
 
 - 本机 macOS ARM64、Python 3.14、Ray 2.59.0、九张 2560×1440 合成图片、100×68 工作画布、2 CPU/0 GPU、每 task 256 MiB 资源申请和最多 2 个在途：两个不同 worker PID 在一个物理节点完成九个 task。原版串行代码、重构后串行和 Ray 的工作画布、裁剪尺寸 100×51、覆盖 4211 像素、重叠 3835 像素、相机统计与三张对照图片逐像素一致，融合 JPEG 字节 SHA-256 相同。单相机注入失败后仅该机由 attempt 0 转 attempt 1；重试耗尽时无成功 manifest，重复目标输出被拒绝。
 - 全量 Python 回归 152 项通过（含 Ray 合成集成 3 项）；Go 单元测试通过，源码编译和 Git diff 检查通过。最后一次合成集成运行测得串行拼接 0.186 秒、Ray 启动 3.462 秒、已启动 Ray 的拼接运行含一次相机重试 0.142 秒；只供该小画布本机样例参考，不代表通用加速。真实 S3 传输、更多相机和更大画布可能转移瓶颈。
 - 开发指南中的 Ray CLI 本机合成命令已实际执行：启动本地两 CPU Ray、九相机拼接、串行对照和停止均成功；两种输出的画布、裁剪、统计、逐机报告与融合 JPEG 哈希一致，九个 task 落在两个不同 worker PID。自定义 Ray 临时目录需同时传给 CLI 的 `--ray-temp-dir` 或 Phase 2 执行器的 `SV_RAY_TEMP_DIR`。
-- 物理多节点、真实 MinIO/MySQL 控制面联调、外部强杀 Ray worker 和 Windows/Intel Mac 尚未验证。Phase 2 的真实依赖限制仍见 Step 6；未提前接入 Argo。
+- 2026-10-08 本地 MySQL 8.4.10、MinIO RELEASE.2025-04-22T22-12-26Z 与两个进程的 Ray 联调：九张合成图片的 Job `129420cc449ab5a5189ca68615d72db9` 经 `pending → running → succeeded`，attempt1 发布 map25d、stitching 两个 Artifact。逐对象校验快照/run/两种 Artifact 分别为 12/7/63/25 个文件；九个不同 task ID 分布在两个 worker PID、一个物理节点。九个分片清单及 NPZ 均从 MinIO 重读并通过身份、SHA-256、尺寸和类型检查；还原 run 后串行对照的画布 165×101、裁剪 69×28、覆盖 1653、重叠 1549、逐机报告与融合/诊断图字节一致，融合 JPEG SHA-256 为 `5b8a491bee60d1716f458a793ad265b5bb815a1049c0f672bd5eab22897ca6ce`。
+- 在真实 MinIO 上另行注入 CAMERA-01 首次 task 故障：最多 1 次尝试时无成功 manifest；最多 2 次时只有 CAMERA-01 使用第二次 part attempt，其他八机保持首次 attempt。Ray 集成测试改用每例独立短临时目录，消除残留集群地址引起的误连接。定向 Python 回归 10 项、全量 152 项及真实 MySQL 的 Go 测试通过。
+- 规范命名后用旧 `producer=store_vision.cloud_phase1` 的已发布快照运行新 Job `c2456a0b28ff4cb9921a73008691d82e`：Go worker 调用新 `cloud_job_runner` 入口，attempt1 成功发布两种 Artifact；新 run 的 producer 为 `store_vision.cloud_workspace`，Ray 分片版本为 `parameter-stitch-part/1.0.9`。快照/run/map25d/stitching 的 12/7/63/25 个资源及九个分片从真实 MinIO 复核通过，两个 worker PID 的结果与串行输出逐字节一致，融合 JPEG SHA-256 保持 `5b8a491bee60d1716f458a793ad265b5bb815a1049c0f672bd5eab22897ca6ce`。新 `cloud_job_runner snapshot` 命令另上传并校验 12 个合成资源，producer 为新模块名。旧清单读取与新清单写入均已验证。
+- 收尾回归：重命名后定向 Python 10 项、全量 152 项、真实 MySQL 的 Go 测试、`go vet`、源码编译与差异检查通过。临时 Ray/API/worker 和原有本地 Demo API 已停止，Compose 中 MySQL 与 MinIO 均为 `exited (0)`；保留数据卷和被忽略的合成验收产物供复查。
+- 物理多节点、远程 S3、外部强杀 Ray worker、真实共享标定以及 Windows/Intel Mac 尚未验证；本次执行器使用合成 K/D/R/t 报告。Phase 2 串行执行器的真实依赖联调见 Step 6；未提前接入 Argo。
 
 ## Step 6：云端 Phase 2 对象存储与最小控制面（2026-10-06）
 
@@ -21,11 +25,14 @@
 
 - 新增带前缀隔离、条件写、SHA-256/大小复核的 S3 兼容存储适配；Phase 1 快照、run 和 artifact 合同可经 MinIO URI 跨 scratch 使用，两个结果校验后创建已发布指针。
 - 新增 Go API、MySQL migration 和独立轮询执行器，提供 Dataset 注册、Job 提交/查询、Artifact 查询与取消请求。Job 唯一键实现幂等，版本/attempt 条件更新保护终态，运行中取消只登记意图。
-- 本地 Compose 固定 MySQL/MinIO 镜像，凭据仅从忽略的 `.env`/环境变量获取。合成样例、启动/迁移/查询/清理命令见开发指南；职责、状态和一致性边界见[Phase 2 合同](../design/cloud-pipeline/contracts-phase2.md)。版本更新为 `V1.0.5_20261006`。
+- 本地 Compose 固定 MySQL/MinIO 镜像，凭据仅从忽略的 `.env`/环境变量获取。合成样例、启动/迁移/查询/清理命令见开发指南；职责、状态和一致性边界见[Phase 2 合同](../design/cloud-pipeline/contracts-phase2.md)。本 Step 初版为 `V1.0.5_20261006`；2026-10-07 续验并修正本地启动配置与暂态重试后，版本更新为 `V1.0.7_20261007`。
 
 ### 验证与边界
 
-- 离线 S3 故障测试 3 项通过；Go 控制面单元测试 4 项通过，竞态检查和 `go vet` 通过；Python 编译检查通过。真实 MySQL 并发测试已提供并跳过：本机 Docker daemon 无法启动，因而未执行真实 MinIO/MySQL 联调、端到端合成 Job 与对象键/状态序列实测。当前 Python 环境缺项目开发依赖，Phase 1 测试无法在本次重跑；Step 5 记录的 146 项通过仍为此前验收证据。
+- 初版离线 S3 故障测试 3 项、Go 控制面单元测试 4 项通过，竞态检查、`go vet` 与 Python 编译检查通过；当时 Docker daemon 未启动，真实依赖实验留待本次续验。
+- 2026-10-07 本机 Docker Desktop 中以固定缓存镜像启动 MySQL 8.4.10、MinIO RELEASE.2025-04-22T22-12-26Z，迁移与 bucket 创建成功。合成 Job `82f272f2aff914154fe74f12f6a305dc` 经 `pending → running → succeeded`，attempt1 发布 2 个 Artifact；快照/run/map25d/stitching 的跨 S3 资源校验通过，资源数依次为 12/7/63/25。真实 MySQL 12 客户端同键并发提交测试通过；同键同体复用 Job、同键异体返回 409，API 重启后仍读取成功结果。
+- 注入对象发布后、MySQL 提交前故障时，Job `723b88863b5c43502f2e02375b707a31` 的 attempt1 publication 已存在而 API 仍为 `running`、Artifact 为空；租约过期后 attempt2 成功且 API 仅公开 attempt2。未领取 Job 取消后结算 `failed/cancelled`，成功 Job 拒绝取消。关闭 MinIO 后 Job `b9f7c2c56683deb105f0c627ed24bf4e` 经 attempt1/2 的 `storage_transient` 与 15 秒重领等待，在恢复后的 attempt3 成功。Phase 1 与 S3 定向回归 7 项通过；Go 竞态测试、`go vet`、真实 MySQL 并发测试通过。以独立本地 Ray 实例排除已有集群干扰后，全量 Python 回归 152 项通过。完整命令及观察位置见开发指南与 Phase 2 合同。
+- 本机固定 MinIO 镜像已缓存，远程镜像标签可拉取性尚未确认。当前合成验收未覆盖生产认证、物理多节点、远程 S3、真实共享标定或 Windows/Intel Mac。
 - S3 上传和 MySQL 状态没有跨系统事务；数据库提交失败时已上传 attempt 可能不可见，重领会使用新 attempt。API 的 HTTP 200/202 不代表算法完成。`X-Owner-ID` 仅为本地分区字段，尚无生产认证；Windows/Intel Mac 仍未实测。
 
 ## Step 5：云端 Phase 1 合同与本地适配（2026-10-05）
@@ -41,6 +48,7 @@
 
 - 参考基线为 `8520c4958d2da55f784d6f370e19cfa1c05429b5`；开工前工作区已有设计文档迁移与未跟踪云端计划，均予保留。
 - 原有 142 项自动化测试在本机已有隔离 Python 环境中通过；加入 Phase 1 的 4 项合成合同测试后，全量回归为 146 项通过、0 项失败、0 项跳过。合成样例跨目录真实运行两个原业务消费者；源码编译、原 CLI 帮助与运行产物忽略规则通过。
+- 2026-10-07 用户按 Phase 1 合同文档复验合成样例，终端结果为 `4 passed in 5.42s`，Phase 1 本地合同与跨目录消费的定向验收通过。该命令只覆盖 4 项合成测试，不替代全量回归或真实共享标定验收。
 - 合成共享报告只用于合同和消费链路验收；真实共享 K/D 与联合 BA、可选 COLMAP/SfM、Windows 与 Intel Mac 未在本阶段验证。Phase 1 不包含远程对象存储、控制面或并行编排。
 
 ## Step 4：数据层级归位与 Python 项目扁平化（2026-10-05）

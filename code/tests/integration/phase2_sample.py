@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from tests.generate_fixtures import generate
-from tests.unit.test_cloud_phase1 import _gui_synthetic
+from tests.unit.test_cloud_workspace import _gui_synthetic
 from tests.unit.test_workspace import _shared_report
 
 

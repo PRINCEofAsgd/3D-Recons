@@ -57,10 +57,10 @@
 store_vision/
 ├── __init__.py                    # 包版号
 ├── __main__.py                    # python -m 入口
-├── cloud_phase1.py                # 可移植合同、本地存储与原算法适配
-├── cloud_s3.py                    # S3 签名请求、前缀隔离与字节校验
-├── cloud_phase2.py                # 快照上传与 worker 的原算法适配
-├── cloud_ray.py                   # Ray 逐相机分片、重试、校验屏障与汇总
+├── ⭐️ cloud_workspace.py          # 计算执行流程化，包含数据规则与算法调用
+├── ⭐️ s3_object_store.py          # S3 对象存储数据面实现
+├── ⭐️ cloud_job_runner.py         # 基于对象存储的计算执行流程化
+├── ⭐️ ray_stitching.py            # Ray 分布式计算框架下的逐相机并发计算
 ├── cli.py                         # CLI 与 GUI/headless 分派
 ├── config.py                      # 阈值和数据根配置
 ├── pipeline.py                    # 兼容 headless 流水线
@@ -140,9 +140,9 @@ tests/
 
 pytest 只从 `tests` 收集，不读取 `data/` 或 `archive/`。
 
-`tests/unit/test_cloud_phase1.py` 用合成夹具验证快照、跨目录恢复、两个原业务消费者和合同拒绝条件。
-`tests/unit/test_cloud_s3_stdlib.py` 用合成字节验证 S3 故障边界；`tests/integration/phase2_sample.py` 生成本地验收输入。`cloud/main_test.go` 验证控制面分支，`cloud/main_integration_test.go` 可对真实 MySQL 唯一约束执行并发提交实验。
-`tests/integration/test_cloud_ray.py` 用合成图片验证串行/Ray 一致性、两个 worker 进程、逐机失败重试、分片校验与不覆盖。
+`tests/unit/test_cloud_workspace.py` 用合成夹具验证快照、跨目录恢复、两个原业务消费者和合同拒绝条件。
+`tests/unit/test_s3_object_store.py` 用合成字节验证 S3 故障边界；`tests/integration/phase2_sample.py` 生成本地验收输入。`cloud/main_test.go` 验证控制面分支，`cloud/main_integration_test.go` 可对真实 MySQL 唯一约束执行并发提交实验。
+`tests/integration/test_ray_stitching.py` 用合成图片验证串行/Ray 一致性、两个 worker 进程、逐机失败重试、分片校验与不覆盖。
 
 ## 数据合同与运行产物
 
@@ -206,11 +206,11 @@ store-vision / python -m store_vision
 
 `main.py` 与 `__main__.py` 只转发到 `cli.main`。
 
-`cloud_phase1` 为独立 Python API，不改 GUI/CLI 路由：输入预检 → 输入快照 → 本地物化 → 原共享标定结果发布 v2 → run 合同 → 跨目录恢复 v2 → 两个原消费者 → artifact 合同。`pipeline.py` 仍为兼容 headless 路径。
+`cloud_workspace` 为独立 Python API，不改 GUI/CLI 路由：输入预检 → 输入快照 → 本地物化 → 原共享标定结果发布 v2 → run 合同 → 跨目录恢复 v2 → 两个原消费者 → artifact 合同。已有清单的 `producer` 字段作为来源文本保留，读取时按合同字段校验，不要求等于当前模块名。`pipeline.py` 仍为兼容 headless 路径。
 
-Phase 2 调用链：`cloud_phase2 snapshot` → S3 快照；Go `/datasets`、`/jobs` → MySQL；独立 Go worker → `cloud_phase2 execute` → S3 attempt、清单与指针 → MySQL 终态 → `/jobs/<id>/artifacts`。本地 worker 在后续阶段可由 Argo 编排替换。
+Phase 2 调用链：`cloud_job_runner snapshot` → S3 快照；Go `/datasets`、`/jobs` → MySQL；独立 Go worker → `cloud_job_runner execute` → S3 attempt、清单与指针 → MySQL 终态 → `/jobs/<id>/artifacts`。本地 worker 在后续阶段可由 Argo 编排替换。
 
-Phase 3 可选调用链：`cloud_phase2 execute` → `prepare_stitching_runtime` 确定共同画布 → `cloud_ray.run_ray_stitching` 限流派发逐机 task → 分片清单与数组全量校验 → `run_parameter_stitching` 按相机顺序全局 reduce → 原 Phase 2 artifact/指针发布。无 `SV_RAY_ADDRESS` 时直接运行同一逐机函数的串行路径。
+Phase 3 可选调用链：`cloud_job_runner execute` → `prepare_stitching_runtime` 确定共同画布 → `ray_stitching.run_ray_stitching` 限流派发逐机 task → 分片清单与数组全量校验 → `run_parameter_stitching` 按相机顺序全局 reduce → 原 Phase 2 artifact/指针发布。无 `SV_RAY_ADDRESS` 时直接运行同一逐机函数的串行路径。
 
 ## GUI 调用链
 
@@ -260,7 +260,7 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.6`，平台展示版号为 `V1.0.6_20261006`。修改时同步检查：
+当前代码版号为 `1.0.9`，平台展示版号为 `V1.0.9_20261008`。修改时同步检查：
 
 - `code/pyproject.toml`
 - `code/store_vision/__init__.py`

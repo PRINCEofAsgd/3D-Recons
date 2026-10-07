@@ -2,7 +2,7 @@
 
 ## 边界与调用链
 
-`code/store_vision/cloud_s3.py` 用 S3 Signature V4 的 path-style 请求对带前缀的键执行条件 PUT、GET 与 SHA-256/大小复核。`cloud_phase2.upload_snapshot` 经 Phase 1 预检上传输入快照；清单仅含 `s3://` URI。Go `POST /datasets` 登记快照 URI，`POST /jobs` 只创建数据库元数据。独立 `cloud/main.go` worker 领取 Job，调用 `cloud_phase2.execute`：下载到 Job/attempt 独立 scratch → 原共享标定/测试显式合成报告 → 原 v2 中间层 → 原 2.5D 与拼接消费者 → 上传 attempt 对象 → 校验 run/artifact → 条件创建 `published` 指针 → MySQL 条件提交结果。API 不同步执行算法，也不把图像存入 MySQL。
+`code/store_vision/s3_object_store.py` 用 S3 Signature V4 的 path-style 请求对带前缀的键执行条件 PUT、GET 与 SHA-256/大小复核。`cloud_job_runner.upload_snapshot` 经 Phase 1 预检上传输入快照；清单仅含 `s3://` URI。Go `POST /datasets` 登记快照 URI，`POST /jobs` 只创建数据库元数据。独立 `cloud/main.go` worker 领取 Job，调用 `cloud_job_runner.execute`：下载到 Job/attempt 独立 scratch → 原共享标定/测试显式合成报告 → 原 v2 中间层 → 原 2.5D 与拼接消费者 → 上传 attempt 对象 → 校验 run/artifact → 条件创建 `published` 指针 → MySQL 条件提交结果。API 不同步执行算法，也不把图像存入 MySQL。
 
 ```text
 snapshots/<dataset>/<snapshot>/objects/<prefix>/<sha256>
@@ -26,10 +26,12 @@ running → pending                  # 对象存储暂态失败，最多三次�
 pending/running → cancel_requested → failed(cancelled)
 ```
 
-执行中的取消只登记意图；本阶段无法中断 Python 算法。若完成时已收到取消，worker 不向数据库提交成功 Artifact。已经 `succeeded` 的 Job 拒绝取消，原有结果仍可见。API/worker 重启后状态从 MySQL 读取；运行中租约 90 秒并每 20 秒续约，过期可重新领取，超过三次则以 `lease_expired` 失败。旧 attempt 的完成不通过 attempt 和版本条件。MinIO 暂不可用时 Python 以退出码 75 标示，worker 以 `storage_transient` 有界重试；坏资源/合同错误终止为 `execution`。
+执行中的取消只登记意图；本阶段无法中断 Python 算法。若完成时已收到取消，worker 不向数据库提交成功 Artifact。已经 `succeeded` 的 Job 拒绝取消，原有结果仍可见。API/worker 重启后状态从 MySQL 读取；运行中租约 90 秒并每 20 秒续约，过期可重新领取，超过三次则以 `lease_expired` 失败。旧 attempt 的完成不通过 attempt 和版本条件。MinIO 暂不可用时 Python 以退出码 75 标示，worker 将 Job 置回 `pending/storage_transient`，等待 15 秒后领取新 attempt，最多领取三次；坏资源/合同错误终止为 `execution`。`lease_until` 在 `pending` 状态表示下次可领取时间，在 `running` 状态表示租约到期时间。
 
 `X-Owner-ID` 是本地 Demo 的分区标识，API 校验 ID 格式并按 owner 限制查询；它不是身份认证。请求 JSON 限 4 KiB，拒绝未知字段、错误身份和不同前缀的快照 URI。`POST /jobs` 的 HTTP 200/202 都不是计算完成的证明。
 
 ## 验证边界
 
-本阶段可离线执行的测试：Python S3 协议替身覆盖重复 PUT、坏校验和、部分上传、缺对象、暂不可用；Go SQL mock 覆盖提交幂等分支、原子创建 stage、重启后的状态读取、过期 attempt 重领和取消 CAS。`TestConcurrentSubmitMySQL` 需显式传本地 Demo 的 `SV_TEST_MYSQL_DSN`，才会通过真实 MySQL 唯一约束检验 12 个并发提交；未设置时跳过。`-test-fail-after-upload` 可在真实依赖启动后制造对象发布与数据库提交之间的故障。完整合成从注册到结果查询的命令见[开发指南](../../user/development.md)。当前环境 Docker daemon 无法启动，真实 MinIO/MySQL、端到端状态序列与对象键尚未实测；不能将离线替身视作真实联调。
+本阶段可离线执行的测试：Python S3 协议替身覆盖重复 PUT、坏校验和、部分上传、缺对象、暂不可用；Go SQL mock 覆盖提交幂等分支、原子创建 stage、重启后的状态读取、过期 attempt 重领、暂态重试时间和取消 CAS。`TestConcurrentSubmitMySQL` 需显式传本地 Demo 的 `SV_TEST_MYSQL_DSN`，才会通过真实 MySQL 唯一约束检验 12 个并发提交；未设置时跳过。`-test-fail-after-upload` 可在真实依赖启动后制造对象发布与数据库提交之间的故障。完整合成从注册到结果查询的命令见[开发指南](../../user/development.md)。
+
+2026-10-07 在本机 Docker Desktop 的真实 MySQL/MinIO 上，合成 Job `82f272f2aff914154fe74f12f6a305dc` 经 `pending → running → succeeded`，`attempts=1`，两个 Artifact 可从 API 查询；输入快照、run、两个 Artifact 清单均通过跨 S3 读取和资源校验，分别含 12、7、63、25 个文件。真实 MySQL 的 12 客户端并发同键提交测试通过；相同键和请求体返回原 Job，不同请求体返回 409，API 重启后仍能读取成功状态。故障 Job `723b88863b5c43502f2e02375b707a31` 在 attempt1 publication 已存在、数据库尚未提交时，API 仍显示 `running` 且 Artifact 不可见；租约过期后 attempt2 成功，API 仅返回 attempt2。取消未领取 Job 结算为 `failed/cancelled`，成功 Job 拒绝取消。停止 MinIO 后 Job `b9f7c2c56683deb105f0c627ed24bf4e` 经两次 `storage_transient` 重试，在服务恢复后的 attempt3 成功。这些实验验证的是本机单 worker 与真实本地依赖；物理多节点、生产认证和远程 S3 仍未验证。

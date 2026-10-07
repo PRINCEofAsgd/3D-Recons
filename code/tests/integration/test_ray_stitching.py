@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -12,8 +14,8 @@ import cv2
 import numpy as np
 import pytest
 
-from store_vision.cloud_phase1 import LocalObjectStore
-from store_vision.cloud_ray import (
+from store_vision.cloud_workspace import LocalObjectStore
+from store_vision.ray_stitching import (
     RayResources, TASK_VERSION, _digest, _one_camera_task,
     _validated_part, run_ray_stitching,
 )
@@ -24,8 +26,20 @@ from store_vision.mapping.parameter_stitcher import (
 from tests.unit.test_workspace import _shared_report
 
 
+@pytest.fixture
+def ray_temp_dir():
+    """每个测试独占 Ray 会话目录，避免连接此前验收留下的集群地址。"""
+
+    # macOS 使用短路径避开 Unix socket 长度限制；其他平台使用系统临时目录。
+    path = Path(tempfile.mkdtemp(prefix="svray-", dir="/tmp" if Path("/tmp").is_dir() else None))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest.mark.timeout(180)
-def test_ray_parts_match_serial_and_retry_only_failed_camera(fixture_dir, tmp_path):
+def test_ray_parts_match_serial_and_retry_only_failed_camera(fixture_dir, tmp_path, ray_temp_dir):
     """固定相机次序使整型像素、覆盖和统计都可要求完全相等。"""
 
     ray = pytest.importorskip("ray")
@@ -45,9 +59,8 @@ def test_ray_parts_match_serial_and_retry_only_failed_camera(fixture_dir, tmp_pa
     images = {cid: store.put(Path(camera["image_path"]).read_bytes(), "image/jpeg")
               for cid, camera in runtime.camera_rig["cameras"].items()}
     failed_camera = next(iter(images))
-    Path("/tmp/svray").mkdir(exist_ok=True)
     started = time.perf_counter()
-    ray.init(num_cpus=2, include_dashboard=False, _temp_dir="/tmp/svray")
+    ray.init(num_cpus=2, include_dashboard=False, _temp_dir=str(ray_temp_dir))
     ray_start_seconds = time.perf_counter() - started
     try:
         with pytest.raises(RuntimeError, match="重试耗尽"):
@@ -96,16 +109,15 @@ def test_ray_parts_match_serial_and_retry_only_failed_camera(fixture_dir, tmp_pa
     print(f"phase3 synthetic timing: serial={serial_seconds:.3f}s ray_start={ray_start_seconds:.3f}s ray_run_with_retry={ray_seconds:.3f}s")
 
 
-def test_ray_contract_error_precedes_output(fixture_dir, tmp_path):
+def test_ray_contract_error_precedes_output(fixture_dir, tmp_path, ray_temp_dir):
     """相机集合错误属于不可重试合同错误，输出目录不可见。"""
 
     package = tmp_path / "intermediate"
     publish_intermediate_package(fixture_dir, package, _shared_report(fixture_dir))
-    Path("/tmp/svray").mkdir(exist_ok=True)
     with pytest.raises(ValueError, match="相机集合"):
         # 使用测试替身只检查驱动端合同，避免依赖真实对象读取。
         import ray
-        ray.init(num_cpus=1, include_dashboard=False, _temp_dir="/tmp/svray")
+        ray.init(num_cpus=1, include_dashboard=False, _temp_dir=str(ray_temp_dir))
         try:
             run_ray_stitching(package, tmp_path / "bad", job_id="job1", run_id="run1",
                               attempt_id="attempt1", image_resources={},

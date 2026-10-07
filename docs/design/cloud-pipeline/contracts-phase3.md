@@ -16,4 +16,6 @@ Ray task 从快照资源 URI 读取本相机原图，先验证 SHA-256/大小，
 
 ## 验收口径与边界
 
-合成样例使用 `code/tests/fixtures/sample_store` 的九张去标识化图片、固定的测试 K/D/R/t 与相同画布参数。预定容差：输出尺寸、覆盖/相机统计完全一致，融合图、诊断图和逐机报告的整数像素差为 0。原因是逐相机算法相同，reduce 固定相机顺序，因此浮点加法顺序不变；若以后改为树形 reduce，需重新约定浮点容差。集成测试检查至少两个不同 Ray worker PID、注入单机第一次失败后只该机使用第二次 attempt、重试耗尽时无成功 manifest、重复输出拒绝覆盖。测试仅验证本机两个进程；物理多节点、真实 MinIO/MySQL 与 worker 进程被外部杀死的情形仍待独立环境验证。运行命令和资源配置见[开发指南](../../user/development.md#phase-3-ray-逐相机拼接)。
+合成样例使用 `code/tests/fixtures/sample_store` 的九张去标识化图片、固定的测试 K/D/R/t 与相同画布参数。预定容差：输出尺寸、覆盖/相机统计完全一致，融合图、诊断图和逐机报告的整数像素差为 0。原因是逐相机算法相同，reduce 固定相机顺序，因此浮点加法顺序不变；若以后改为树形 reduce，需重新约定浮点容差。集成测试检查至少两个不同 Ray worker PID、注入单机第一次失败后只该机使用第二次 attempt、重试耗尽时无成功 manifest、重复输出拒绝覆盖；每个测试使用独立 Ray 临时目录，避免复用已停止集群。2026-10-08 本机还通过真实 MinIO/MySQL 的 API → worker → Ray → 分片 → reduce → Artifact 链路，以及真实 MinIO 上的单机故障实验。物理多节点、远程 S3 与 worker 进程被外部杀死的情形仍待独立环境验证。运行命令和资源配置见[开发指南](../../user/development.md#phase-3-ray-逐相机拼接)。
+
+收尾版本中，分片实现位于 `ray_stitching.py`，快照和结果合同位于 `cloud_workspace.py`，Go worker 调用 `cloud_job_runner.py`。已发布清单的 producer 文本不因 Python 文件重命名而失效；旧快照与新 run 共同参与的真实 MinIO/MySQL Job 已成功发布，分片 `task_version` 更新为 `parameter-stitch-part/1.0.9`。模块重命名不改变上述业务身份、校验屏障和单次可见发布规则。

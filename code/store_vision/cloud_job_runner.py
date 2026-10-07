@@ -1,4 +1,4 @@
-"""Phase 2 命令入口：快照上传与独立执行器的单次算法运行。"""
+"""云端 Job 命令入口：上传快照并在独立 scratch 执行一次任务。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import sys
 from pathlib import Path
 
 from store_vision.calibration.shared_calibration import run_shared_intrinsics_calibration
-from store_vision.cloud_phase1 import (create_dataset_snapshot, materialize_run,
-                                       materialize_snapshot, stage_artifact,
-                                       stage_intermediate, validate_artifact,
-                                       validate_run, validate_snapshot, _identity)
-from store_vision.cloud_s3 import S3ObjectStore, StorageUnavailable
+from store_vision.cloud_workspace import (create_dataset_snapshot, materialize_run,
+                                          materialize_snapshot, stage_artifact,
+                                          stage_intermediate, validate_artifact,
+                                          validate_run, validate_snapshot, _identity)
+from store_vision.s3_object_store import S3ObjectStore, StorageUnavailable
 from store_vision.data.workspace import publish_intermediate_package
 from store_vision.mapping.map25d_pipeline import run_map25d_from_intermediate
 from store_vision.mapping.parameter_stitcher import ParameterStitchConfig, run_parameter_stitching
@@ -63,7 +63,7 @@ def execute(store: S3ObjectStore, snapshot_uri: str, run_id: str, attempt_id: st
             if ray_address:
                 # Phase 3 可选计算面：远端 worker 按快照资源 URI 读取各自原图。
                 import ray
-                from store_vision.cloud_ray import RayResources, run_ray_stitching
+                from store_vision.ray_stitching import RayResources, run_ray_stitching
                 ray.init(address=ray_address, _temp_dir=os.getenv("SV_RAY_TEMP_DIR"))
                 try:
                     images = {row["camera_id"]: row for row in snapshot["files"] if row["role"] == "image"}
@@ -98,7 +98,7 @@ def execute(store: S3ObjectStore, snapshot_uri: str, run_id: str, attempt_id: st
 
 def main() -> None:
     """供人工注册输入及 Go 过渡执行器调用。"""
-    parser = argparse.ArgumentParser(description="Store Vision 云端 Phase 2")
+    parser = argparse.ArgumentParser(description="Store Vision 云端快照与 Job 执行")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("bucket")
     snapshot = sub.add_parser("snapshot")

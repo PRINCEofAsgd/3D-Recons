@@ -30,8 +30,8 @@ cali/scale/floorplan/screenshots（只读）
   "kind": "dataset_snapshot",
   "dataset_id": "synthetic",
   "snapshot_id": "snapshot1",
-  "producer": "store_vision.cloud_phase1",
-  "algorithm_version": "1.0.4",
+  "producer": "store_vision.cloud_workspace",
+  "algorithm_version": "1.0.9",
   "parameters_digest": "<sha256>",
   "created_at": "<UTC ISO-8601>",
   "parents": [],
@@ -42,6 +42,8 @@ cali/scale/floorplan/screenshots（只读）
 
 `run` 另含 `run_id`、`attempt_id`、`snapshot_id`、`candidate`、`camera_ids`、`capabilities`、`coordinate_contract`、`resources` 和指向 snapshot 的 `parents`。`artifact` 另含 `artifact_id`、`workflow`、`candidate`、`coordinate_contract`、`files` 和指向 run/attempt 的 `parents`。每一资源行均保存对象 URI、字节数、SHA-256、媒体类型和相对路径。参数摘要、生产者、算法版本与 UTC 创建时间在三种清单中一致使用。
 
+`producer` 是已发布清单的来源记录。模块重命名后新清单写入 `store_vision.cloud_workspace`；旧清单中的 `store_vision.cloud_phase1` 仍可读取，合同校验不以当前 Python 模块路径作为身份门禁。
+
 原 schema v2 不修改。导出 run 时仅从 v2 manifest 的正式键枚举 `manifest.json`、候选 rig/H、观测、平面框架与高度策略等资源。资源 JSON 内指向输入或中间层的绝对路径转为 `svref://input/...` 或 `svref://intermediate/...`；恢复时才重建 scratch 内绝对路径供原消费者使用。未知的机器绝对路径直接拒绝。输入快照记录相机 ID；run 记录所选候选和两种业务能力。世界地面坐标系与单位从 v2 地面合同读取，合成样例是 `store_ground_world`、米；平面图样例是 `floorplan_pixel`、像素。K/D/R/t/H 留在被校验的 v2 候选资源中。原 v2 的 `dataset_id`、`schema_version`、`calibration_candidates`、`active_calibration`、`planar_projection_candidates`、`frames`、`capabilities`、`input` 和 `lineage` 继续由原业务入口解释。v2 中的输入与图像绝对路径绑定一台机器，因此不能直接拷入另一个容器。
 
 ## 验收命令与输出
@@ -50,7 +52,7 @@ cali/scale/floorplan/screenshots（只读）
 
 ```bash
 QT_QPA_PLATFORM=offscreen MPLCONFIGDIR=../outputs/matplotlib \
-  python -m pytest -q tests/unit/test_cloud_phase1.py \
+  python -m pytest -q tests/unit/test_cloud_workspace.py \
   --basetemp ../outputs/phase1-pytest
 ```
 

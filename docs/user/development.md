@@ -17,7 +17,7 @@ python3.14 -m venv .venv
 source .venv/bin/activate
 python --version
 python -m pip install --upgrade pip
-  python -m pip install --no-cache-dir -e '.[dev]'
+python -m pip install --no-cache-dir -e '.[dev]'
 ```
 
 激活后 `python --version` 必须显示 3.11～3.14；若版本不符，先运行 `deactivate`，在 `code/` 中删除旧 `.venv`，再用受支持的解释器重新创建。升级 pip 不会改变虚拟环境的 Python 版本；依赖安装失败时，后续测试也不会有 pytest。依赖只写入项目 `.venv`。Windows PowerShell 可用 `py -3.14 -m venv .venv` 创建，再用 `.venv\Scripts\Activate.ps1` 激活；其他受支持版本相应调整版本号。
@@ -40,7 +40,7 @@ store-vision --help
 ```bash
 cd code
 QT_QPA_PLATFORM=offscreen MPLCONFIGDIR=../outputs/matplotlib \
-  python -m pytest -q tests/unit/test_cloud_phase1.py \
+  python -m pytest -q tests/unit/test_cloud_workspace.py \
   --basetemp ../outputs/phase1-pytest
 ```
 
@@ -58,30 +58,32 @@ QT_QPA_PLATFORM=offscreen MPLCONFIGDIR=../outputs/matplotlib \
 ```bash
 cd cloud
 cp .env.example .env
-# 编辑 .env 中的占位值；SV_MYSQL_DSN 中的密码须与 SV_MYSQL_PASSWORD 一致。
-docker compose up -d
+# 编辑 .env 中的占位值；SV_MYSQL_DSN 中的密码须与 SV_MYSQL_PASSWORD 一致，DSN 保留引号以便 shell 加载。
+docker compose up -d --wait
 docker compose ps
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u "$MYSQL_USER" "$MYSQL_DATABASE"' < migrations/001_phase2.sql
 set -a; . ./.env; set +a
 cd ../code
 source .venv/bin/activate
-python -m store_vision.cloud_phase2 bucket
-python -m tests.integration.phase2_sample --out ../cloud-local/sample
-python -m store_vision.cloud_phase2 snapshot --source ../cloud-local/sample/source --dataset-id synthetic --snapshot-id snapshot1
+python -m store_vision.cloud_job_runner bucket
+MPLCONFIGDIR=../cloud-local/matplotlib python -m tests.integration.phase2_sample --out ../cloud-local/sample
+python -m store_vision.cloud_job_runner snapshot --source ../cloud-local/sample/source --dataset-id synthetic --snapshot-id snapshot1
 ```
+
+`--wait` 会等待 MySQL 健康检查。2026-10-07 本机使用已缓存的 `mysql:8.4.10` 与 `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z`，以 `docker compose up -d --wait --pull never` 启动成功；新机器需要先取得这两个固定镜像，当前未验证该 MinIO 标签的远程仓库可拉取性。`.env` 应限制为仅本机用户可读，且已被 Git 忽略。
 
 另开两个终端，分别运行 API 和执行器；两者读取同一 `cloud/.env`。执行器的 `-synthetic-report` 仅用于该合成验收，省略后会运行原共享标定算法。长计算只在执行器进程中运行。
 
 ```bash
 cd cloud
 set -a; . ./.env; set +a
-GOCACHE=../cloud-local/go-cache go run . -mode api -listen 127.0.0.1:8080
+GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode api -listen 127.0.0.1:8080
 ```
 
 ```bash
 cd cloud
 set -a; . ./.env; set +a
-GOCACHE=../cloud-local/go-cache go run . -mode worker -python ../code/.venv/bin/python -scratch ../cloud-local/scratch -synthetic-report ../cloud-local/sample/synthetic-report.json
+GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode worker -python ../code/.venv/bin/python -scratch ../cloud-local/scratch -synthetic-report ../cloud-local/sample/synthetic-report.json
 ```
 
 第三个终端注册、提交并查询：
@@ -96,13 +98,13 @@ curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID"
 curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID/artifacts"
 ```
 
-`POST /jobs` 返回 202 和 `pending` 只表示已接收；正常预期状态序列为 `pending → running → succeeded`，轮询 `GET /jobs/<id>` 到 `succeeded` 后再查 artifacts。worker 日志按 `job=<id> attempt=attempt1 status=...` 标记领取和终态。对象键依次位于 `$SV_S3_PREFIX/snapshots/synthetic/snapshot1/objects/`、`$SV_S3_PREFIX/attempts/synthetic/<job>/attempt1/objects/` 和 `$SV_S3_PREFIX/manifests/{runs,artifacts,published}/...`。这是运行后的观察位置，目前尚无本机真实联调记录。`X-Owner-ID` 只是本地 Demo 的资源分区标识，不是生产认证。取消入口为 `POST /jobs/<id>/cancel`，仍需携带相同 owner 头；运行中先显示 `cancel_requested`，执行器完成后才结算，不能保证立刻中断算法。
+`POST /jobs` 返回 202 和 `pending` 只表示已接收；正常预期状态序列为 `pending → running → succeeded`，轮询 `GET /jobs/<id>` 到 `succeeded` 后再查 artifacts。worker 日志按 `job=<id> attempt=attempt1 status=...` 标记领取和终态。对象键依次位于 `$SV_S3_PREFIX/snapshots/synthetic/snapshot1/objects/`、`$SV_S3_PREFIX/attempts/synthetic/<job>/attempt1/objects/` 和 `$SV_S3_PREFIX/manifests/{runs,artifacts,published}/...`。2026-10-07 的本机真实联调记录见[Phase 2 合同](../design/cloud-pipeline/contracts-phase2.md)。`X-Owner-ID` 只是本地 Demo 的资源分区标识，不是生产认证。取消入口为 `POST /jobs/<id>/cancel`，仍需携带相同 owner 头；运行中先显示 `cancel_requested`，执行器完成后才结算，不能保证立刻中断算法。
 
-可重复的“上传后、数据库提交前崩溃”实验：停止正常 worker，在同样的启动命令末尾加 `-test-fail-after-upload`，另用新的幂等键 `sample-002` 提交 Job。worker 上传并创建 `attempt1` publication 后主动退出，日志出现 `injected failure after upload before database commit`；API 仍显示 `running` 且 artifacts 为 202/空列表。重新启动不带该标志的 worker，约 90 秒租约到期后领取 `attempt2`，正常情况下转为 `succeeded`，API 只返回 `attempt2` 的 URI。`attempt1` 对象仍存在，需按前缀清理；这些是预期现象，尚未在本机真实 MinIO/MySQL 上验证。
+可重复的“上传后、数据库提交前崩溃”实验：停止正常 worker，在同样的启动命令末尾加 `-test-fail-after-upload`，另用新的幂等键 `sample-002` 提交 Job。worker 上传并创建 `attempt1` publication 后主动退出，日志出现 `injected failure after upload before database commit`；API 仍显示 `running` 且 artifacts 为 202/空列表。重新启动不带该标志的 worker，约 90 秒租约到期后领取 `attempt2`，正常情况下转为 `succeeded`，API 只返回 `attempt2` 的 URI。`attempt1` 对象仍存在，需按前缀清理；2026-10-07 已在本机真实 MinIO/MySQL 验证该序列。
 
 ```bash
 # 在已加载 cloud/.env 的 cloud/ 终端启动故障 worker。
-GOCACHE=../cloud-local/go-cache go run . -mode worker -python ../code/.venv/bin/python -scratch ../cloud-local/scratch -synthetic-report ../cloud-local/sample/synthetic-report.json -test-fail-after-upload
+GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode worker -python ../code/.venv/bin/python -scratch ../cloud-local/scratch -synthetic-report ../cloud-local/sample/synthetic-report.json -test-fail-after-upload
 # 另一终端将上文提交命令的 Idempotency-Key 改为 sample-002 后提交；故障 worker 退出后运行正常 worker 命令。
 ```
 
@@ -110,21 +112,23 @@ GOCACHE=../cloud-local/go-cache go run . -mode worker -python ../code/.venv/bin/
 
 ```bash
 cd code
-PYTHONPYCACHEPREFIX=../cloud-local/pycache python -m unittest tests.unit.test_cloud_s3_stdlib -v
+PYTHONPYCACHEPREFIX=../cloud-local/pycache python -m unittest tests.unit.test_s3_object_store -v
 cd ../cloud
-GOCACHE=../cloud-local/go-cache go test ./...
+GOCACHE="$PWD/../cloud-local/go-cache" go test ./...
 # 本地 Demo 数据库完成 migration 后，另设 SV_TEST_MYSQL_DSN 才会运行真实并发唯一键实验。
-SV_TEST_MYSQL_DSN="$SV_MYSQL_DSN" GOCACHE=../cloud-local/go-cache go test -run TestConcurrentSubmitMySQL -v
+SV_TEST_MYSQL_DSN="$SV_MYSQL_DSN" GOCACHE="$PWD/../cloud-local/go-cache" go test -run TestConcurrentSubmitMySQL -v
 ```
 
-最后一条只可针对本地 Demo 数据库运行。测试使用随机合成身份并清理自己的行；无需该实验时不要设置 `SV_TEST_MYSQL_DSN`。停止两个 `go run` 进程后，可在 `cloud/` 执行 `docker compose down -v --remove-orphans` 清除本 Demo 的 MySQL/MinIO 卷，再删除 `../cloud-local/sample`、`../cloud-local/scratch`、`../cloud-local/go-cache`、`../cloud-local/pycache`。仅在这些目录属于本次 Demo 时清理。
+最后一条只可针对本地 Demo 数据库运行。测试使用随机合成身份并清理自己的行；无需该实验时不要设置 `SV_TEST_MYSQL_DSN`。验收后先停止 API、worker 和 Ray，再在 `cloud/` 执行 `docker compose stop`，保留 MySQL/MinIO 卷供复查。仅在确认这些卷完全属于可丢弃的本地 Demo 时，才执行 `docker compose down -v --remove-orphans` 和清理对应的 `cloud-local/` 运行目录。
 
-对象上传与 MySQL 状态提交没有跨系统事务。上传后数据库更新失败会留下 API 不可见的 attempt 对象；同一 Job 的租约到期后最多重领三次，新 attempt 不复用旧结果。过期且未发布的对象需按 Job/attempt 前缀人工清理。Phase 4 的 Argo 将替换本地轮询执行器，不改变 manifest 与数据库边界。细节见[Phase 2 一致性说明](../design/cloud-pipeline/contracts-phase2.md)。
+对象上传与 MySQL 状态提交没有跨系统事务。上传后数据库更新失败会留下 API 不可见的 attempt 对象；同一 Job 的租约到期后最多重领三次，新 attempt 不复用旧结果。MinIO 暂态失败时，Job 显示 `pending/storage_transient`，15 秒后才可重领；恢复前可能消耗多次机会。过期且未发布的对象需按 Job/attempt 前缀人工清理。Phase 4 的 Argo 将替换本地轮询执行器，不改变 manifest 与数据库边界。细节见[Phase 2 一致性说明](../design/cloud-pipeline/contracts-phase2.md)。
 
 
 
 
 ## Phase 3 Ray 逐相机拼接
+
+云端模块按职责命名为 `cloud_workspace`（清单合同与物化）、`s3_object_store`（对象存储）、`cloud_job_runner`（快照与 Job 命令）和 `ray_stitching`（逐机分片与汇总）。Go worker 已使用 `store_vision.cloud_job_runner`；独立命令从仓库文档中的新模块路径启动。
 
 Ray 是可选依赖；桌面拼接和未设置 `SV_RAY_ADDRESS` 的 Phase 2 执行器仍走串行路径。先在项目虚拟环境安装 Ray。下面只使用合成输入，生成目录位于被忽略的 `cloud-local/`；每次重新执行样例需换一个输出目录和 attempt ID。
 
@@ -147,7 +151,7 @@ PY
 
 ```bash
 ray start --head --num-cpus=2 --include-dashboard=false --temp-dir=/tmp/svray --disable-usage-stats
-python -m store_vision.cloud_ray \
+python -m store_vision.ray_stitching \
   --intermediate ../cloud-local/phase3-sample/intermediate \
   --output ../cloud-local/phase3-sample/ray-stitching \
   --store-root ../cloud-local/phase3-sample/objects \
@@ -174,10 +178,25 @@ PY
 
 ```bash
 QT_QPA_PLATFORM=offscreen MPLCONFIGDIR=/tmp/store-vision-matplotlib \
-  python -m pytest -q tests/integration/test_cloud_ray.py
+  python -m pytest -q tests/integration/test_ray_stitching.py
 ```
 
-Phase 2 Go worker 可通过 `SV_RAY_ADDRESS=auto` 与 `SV_RAY_TEMP_DIR=/tmp/svray` 接入上述本地 Ray：它仍先运行共享标定和中间层，再把快照里的逐机图片资源交给 Ray；未设置 `SV_RAY_ADDRESS` 时运行串行拼接。可选 `SV_RAY_TASK_CPUS`、`SV_RAY_TASK_GPUS`、`SV_RAY_TASK_MEMORY_BYTES`、`SV_RAY_MAX_IN_FLIGHT`、`SV_RAY_MAX_ATTEMPTS` 对应上述资源选项。Ray worker 必须能访问相同 Python 包和 S3 环境变量；运行产物、凭据和日志不得提交。正式分片合同见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。当前仅在本机多进程验证，物理多节点与真实 MinIO/MySQL 联调未验证。
+Phase 2 Go worker 可通过 `SV_RAY_ADDRESS=auto` 与 `SV_RAY_TEMP_DIR=/tmp/svray` 接入上述本地 Ray：它仍先运行共享标定和中间层，再把快照里的逐机图片资源交给 Ray；未设置 `SV_RAY_ADDRESS` 时运行串行拼接。可选 `SV_RAY_TASK_CPUS`、`SV_RAY_TASK_GPUS`、`SV_RAY_TASK_MEMORY_BYTES`、`SV_RAY_MAX_IN_FLIGHT`、`SV_RAY_MAX_ATTEMPTS` 对应上述资源选项。Ray worker 必须能访问相同 Python 包和 S3 环境变量；运行产物、凭据和日志不得提交。正式分片合同见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
+
+2026-10-08 已在本机用真实 MySQL/MinIO 和一个物理节点的两个 Ray worker 进程完成合成 Job 联调。复现时先按 Phase 2 步骤启动 Compose、迁移、建桶与上传合成快照；在加载同一 `cloud/.env` 的终端启动上述 `ray start`，再给 Phase 2 worker 命令增加以下环境变量，API、Dataset 注册、Job 提交和查询命令仍按上节执行。每次验收使用新的 Dataset/Snapshot 身份或新的 Job 幂等键，避免复用已经发布的 attempt。
+
+```bash
+SV_RAY_ADDRESS=auto SV_RAY_TEMP_DIR=/tmp/svray SV_RAY_MAX_IN_FLIGHT=2 \
+  GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode worker \
+  -python ../code/.venv/bin/python -scratch ../cloud-local/phase3-scratch \
+  -synthetic-report ../cloud-local/sample/synthetic-report.json
+```
+
+本机验收 Job `129420cc449ab5a5189ca68615d72db9` 的 `attempt1` 成功发布两个 Artifact。快照/run/map25d/stitching 各有 12/7/63/25 个已校验资源，九个相机对应九个 task ID、两个 worker PID；从 MinIO 重读九个分片清单和 NPZ 均通过合同校验。恢复 run 后与串行拼接对照，165×101 工作画布、69×28 裁剪、覆盖 1653 像素、重叠 1549 像素、逐机报告及融合/诊断图字节一致。融合 JPEG SHA-256 为 `5b8a491bee60d1716f458a793ad265b5bb815a1049c0f672bd5eab22897ca6ce`。真实 MinIO 上的单机故障实验确认重试耗尽无 manifest；允许第二次尝试时仅故障相机重跑。Ray 自动化测试使用各自独立的短临时目录，可在停止验收集群后重复运行。物理多节点、远程 S3、外部强杀 worker、真实共享标定与其他平台仍待验证。
+
+模块规范命名后的收尾 Job `c2456a0b28ff4cb9921a73008691d82e` 读取了旧 `producer` 的快照，由新的 Go → `cloud_job_runner` → Ray 入口完成 attempt1，并发布两个 Artifact；九个分片的 `task_version` 为 `parameter-stitch-part/1.0.9`，两进程输出与串行结果逐字节一致。另经新的 `python -m store_vision.cloud_job_runner snapshot` 入口上传并校验了 12 个合成资源。已有清单的 producer 文本无需迁移。
+
+Phase 3 收尾时可在 `cloud/` 执行 `docker compose stop`，预期 `docker compose ps -a` 中 `mysql`、`minio` 都显示 `exited (0)`；该命令保留卷。本机 2026-10-08 已按此方式停止两容器和 Demo API、worker、Ray。需要再次联调时先用 `docker compose up -d --wait` 恢复依赖，并重新启动所需进程。
 
 
 

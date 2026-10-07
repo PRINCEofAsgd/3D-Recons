@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from store_vision.cloud_phase1 import (
+from store_vision.cloud_workspace import (
     LocalObjectStore,
     create_dataset_snapshot,
     materialize_run,

@@ -1,4 +1,4 @@
-"""Phase 1 本地对象存储适配：可移植合同与现有算法之间的边界。"""
+"""云端快照、run 与 artifact 合同，以及本地物化和业务适配。"""
 
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ def create_dataset_snapshot(store: LocalObjectStore, dataset_path: str | Path, d
             raise ValueError("相机图片不在 screenshots 目录")
         files.append(_resource(store, path, name, role="image", camera_id=camera_id))
     manifest = {"schema_version": SCHEMA, "kind": "dataset_snapshot", "dataset_id": dataset_id, "snapshot_id": snapshot_id,
-                "producer": "store_vision.cloud_phase1", "algorithm_version": __version__, "parameters_digest": _sha(b"{}"),
+                "producer": "store_vision.cloud_workspace", "algorithm_version": __version__, "parameters_digest": _sha(b"{}"),
                 "created_at": _now(), "parents": [], "camera_ids": sorted(camera_ids), "files": files}
     validate_snapshot(store, manifest, dataset_id)
     store.publish("snapshots", (dataset_id, snapshot_id), manifest)
@@ -331,7 +331,7 @@ def stage_intermediate(store: LocalObjectStore, package_path: str | Path, input_
         "projection_sha256": resource_by_path[v2["planar_projection_candidates"][candidate]["path"]]["sha256"],
     }
     run = {"schema_version": SCHEMA, "kind": "run", "dataset_id": dataset_id, "snapshot_id": snapshot["snapshot_id"],
-           "run_id": run_id, "attempt_id": attempt_id, "producer": "store_vision.cloud_phase1", "algorithm_version": __version__,
+           "run_id": run_id, "attempt_id": attempt_id, "producer": "store_vision.cloud_workspace", "algorithm_version": __version__,
            "parameters_digest": _sha(_json_bytes(parameter_summary)), "created_at": _now(),
            "parents": [{"kind": "dataset_snapshot", "dataset_id": dataset_id, "snapshot_id": snapshot["snapshot_id"]}],
            "candidate": candidate, "camera_ids": snapshot["camera_ids"], "capabilities": runtime.capabilities.as_dict(),

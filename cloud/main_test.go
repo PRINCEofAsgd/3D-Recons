@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -115,6 +116,24 @@ func TestExpiredAttemptClaimAfterWorkerRestart(t *testing.T) {
 	got, attempt, ok, err := restarted.claim(context.Background())
 	if err != nil || !ok || got.ID != id || attempt != 2 {
 		t.Fatalf("job=%+v attempt=%d ok=%v err=%v", got, attempt, ok, err)
+	}
+	if err := m.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTemporaryStorageFailureSchedulesRetry(t *testing.T) {
+	s, m, db := mockServer(t)
+	defer db.Close()
+	id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	transient := exec.Command("sh", "-c", "exit 75").Run()
+	m.ExpectBegin()
+	m.ExpectQuery("SELECT status,status_version FROM jobs").WithArgs(id, uint64(1)).WillReturnRows(sqlmock.NewRows([]string{"status", "status_version"}).AddRow("running", 1))
+	m.ExpectExec("UPDATE jobs SET status=.*lease_until=CASE WHEN").WithArgs("pending", "storage_transient", nil, "pending", id, uint64(1), uint64(1), "running").WillReturnResult(sqlmock.NewResult(0, 1))
+	m.ExpectExec("UPDATE stages SET status=").WithArgs("pending", "attempt1", nil, "storage_transient", id).WillReturnResult(sqlmock.NewResult(0, 1))
+	m.ExpectCommit()
+	if err := s.finish(context.Background(), job{ID: id}, 1, result{}, transient); err != nil {
+		t.Fatal(err)
 	}
 	if err := m.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

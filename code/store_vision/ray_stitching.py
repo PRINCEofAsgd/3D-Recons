@@ -1,4 +1,4 @@
-"""Phase 3：逐相机 Ray 分片、校验屏障和串行全局汇总。"""
+"""Ray 逐相机拼接：独立分片、校验屏障和串行全局汇总。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ import cv2
 import numpy as np
 
 from store_vision import __version__
-from store_vision.cloud_phase1 import LocalObjectStore, _identity
-from store_vision.cloud_s3 import S3ObjectStore, StorageUnavailable
+from store_vision.cloud_workspace import LocalObjectStore, _identity
+from store_vision.s3_object_store import S3ObjectStore, StorageUnavailable
 from store_vision.mapping.parameter_stitcher import (
     CameraStitchPart, ParameterStitchConfig, WorldCanvas,
     prepare_camera_stitch_part, prepare_stitching_runtime,
@@ -346,7 +346,7 @@ def run_ray_stitching(
 
 
 def main() -> None:
-    """本地合成验收命令；正式控制面由 Phase 2 execute 调用同一入口。"""
+    """本地合成验收命令；正式控制面由云端 Job 执行器调用同一入口。"""
 
     parser = argparse.ArgumentParser(description="Ray 逐相机拼接")
     parser.add_argument("--intermediate", type=Path, required=True)
