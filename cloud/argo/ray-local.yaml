@@ -1,0 +1,51 @@
+# 仅供本机合成验收：单 Pod Ray head 提供两个 CPU worker 进程。
+# 正式多节点 Ray 集群应由运行环境部署，并为其提供受控认证与网络策略。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ray-head
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ray-head
+  template:
+    metadata:
+      labels:
+        app: ray-head
+    spec:
+      containers:
+        - name: ray-head
+          image: store-vision-cloud:1.0.11
+          imagePullPolicy: IfNotPresent
+          command: [ray, start]
+          args: [--head, --block, --num-cpus=2, --include-dashboard=false, --ray-client-server-port=10001, --disable-usage-stats]
+          envFrom:
+            - secretRef:
+                name: store-vision-runtime
+          ports:
+            - containerPort: 10001
+              name: ray-client
+          resources:
+            requests: {cpu: "2", memory: 2Gi}
+            limits: {cpu: "3", memory: 4Gi}
+          volumeMounts:
+            - name: ray-shm
+              mountPath: /dev/shm
+      volumes:
+        - name: ray-shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1536Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ray-head
+spec:
+  selector:
+    app: ray-head
+  ports:
+    - name: ray-client
+      port: 10001
+      targetPort: ray-client

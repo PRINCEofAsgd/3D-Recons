@@ -121,7 +121,7 @@ SV_TEST_MYSQL_DSN="$SV_MYSQL_DSN" GOCACHE="$PWD/../cloud-local/go-cache" go test
 
 最后一条只可针对本地 Demo 数据库运行。测试使用随机合成身份并清理自己的行；无需该实验时不要设置 `SV_TEST_MYSQL_DSN`。验收后先停止 API、worker 和 Ray，再在 `cloud/` 执行 `docker compose stop`，保留 MySQL/MinIO 卷供复查。仅在确认这些卷完全属于可丢弃的本地 Demo 时，才执行 `docker compose down -v --remove-orphans` 和清理对应的 `cloud-local/` 运行目录。
 
-对象上传与 MySQL 状态提交没有跨系统事务。上传后数据库更新失败会留下 API 不可见的 attempt 对象；同一 Job 的租约到期后最多重领三次，新 attempt 不复用旧结果。MinIO 暂态失败时，Job 显示 `pending/storage_transient`，15 秒后才可重领；恢复前可能消耗多次机会。过期且未发布的对象需按 Job/attempt 前缀人工清理。Phase 4 的 Argo 将替换本地轮询执行器，不改变 manifest 与数据库边界。细节见[Phase 2 一致性说明](../design/cloud-pipeline/contracts-phase2.md)。
+对象上传与 MySQL 状态提交没有跨系统事务。上传后数据库更新失败会留下 API 不可见的 attempt 对象；同一 Job 的租约到期后最多重领三次，新 attempt 不复用旧结果。MinIO 暂态失败时，Job 显示 `pending/storage_transient`，15 秒后才可重领；恢复前可能消耗多次机会。过期且未发布的对象需按 Job/attempt 前缀人工清理。Phase 4 新增独立的 `backend=argo`，此处默认 worker 路径继续保留。细节见[Phase 2 一致性说明](../design/cloud-pipeline/contracts-phase2.md)。
 
 
 
@@ -254,6 +254,129 @@ store-vision import-external-calibration \
 ```
 
 真实 COLMAP 运行固定使用参数列表而非 shell 字符串；已有 `database.db` 的目录拒绝覆盖。几何诊断以 SQLite 只读模式访问数据库；已有报告必须显式传 `--overwrite` 才会重建。
+
+## Phase 4 Argo DAG 与双分支
+
+本机合成验收使用 Docker Desktop（分配至少 12 GiB 内存）、kind `v0.33.0`、Kubernetes `v1.36.1` 与 Argo Workflows `v4.1.4`。先按 Phase 2 启动 MySQL/MinIO，再从 kind 和 Argo 的官方固定版本发布源建立集群；`kind` 二进制保存在被忽略的 `cloud-local/bin/`。已有集群时先核对 `kubectl config current-context`，不要将 Workflow 部署到其他 context。Argo 官方完整 CRD 必须使用 server-side apply。旧数据库只执行一次 `002_phase4.sql`；新数据库按编号依次执行 `001_phase2.sql`、`002_phase4.sql`。
+
+```bash
+mkdir -p cloud-local/bin
+curl -fL -o cloud-local/bin/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-darwin-arm64
+chmod +x cloud-local/bin/kind
+cloud-local/bin/kind create cluster --name store-vision --image kindest/node:v1.36.1 --wait 5m
+kubectl config current-context                 # kind-store-vision
+kubectl get nodes                              # Ready
+kubectl create namespace argo
+kubectl apply --server-side -n argo -f \
+  https://github.com/argoproj/argo-workflows/releases/download/v4.1.4/install.yaml
+kubectl -n argo rollout status deployment/workflow-controller --timeout=5m
+```
+
+`cloud/argo/service-account.yaml` 同时包含独立 ServiceAccount 与仅允许 `workflowtaskresults` 的 `create/patch` Role/RoleBinding；缺少后者时算法容器可能成功而 Argo executor 报权限错误。模板中的 CPU/内存参数通过 `podSpecPatch` 注入，因为 CRD 的资源 Quantity 字段不接受模板占位符。
+
+```bash
+cd cloud
+docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u "$MYSQL_USER" "$MYSQL_DATABASE"' < migrations/002_phase4.sql
+cd ..
+docker build -f cloud/Dockerfile -t store-vision-cloud:1.0.11 .
+cloud-local/bin/kind load docker-image store-vision-cloud:1.0.11 --name store-vision
+kubectl get workflows.argoproj.io -A
+# 合成输入只从测试夹具生成；首次执行使用新的输出目录。
+set -a; . ./cloud/.env; set +a
+cd code
+MPLCONFIGDIR=../cloud-local/matplotlib .venv/bin/python -m tests.integration.phase2_sample --out ../cloud-local/phase4-sample
+.venv/bin/python -m store_vision.cloud_job_runner snapshot --source ../cloud-local/phase4-sample/source --dataset-id phase4synthetic --snapshot-id snapshot1
+cd ..
+```
+
+镜像必须能由目标集群拉取，API 的 `SV_ARGO_IMAGE` 必须是固定 tag 或 digest。云端 Dockerfile 只安装无界面的算法依赖；桌面 PyQt6 不进入 Linux ARM64 镜像。`cloud/requirements-runtime.txt` 固定本机成功验收镜像的云端运行依赖，避免重建时自动升级间接依赖。`cloud/argo/runtime.env.example` 列出 Pod 需要的 S3、Ray 和资源变量；复制到被忽略的 `cloud-local/argo-runtime.env` 并填写能从 Pod 访问的地址及本地凭据。本机 kind 可用 `SV_S3_ENDPOINT=http://host.docker.internal:9000`；`127.0.0.1:9000` 在 Pod 中通常指 Pod 自身。合成验收设置 `SV_RAY_ADDRESS=ray://ray-head:10001`、`SV_USE_SYNTHETIC_REPORT=1`，并在仅本地隔离的 Ray 示例中设置 `RAY_AUTH_MODE=disabled`；真实部署应启用受控认证。正常标定把合成报告开关设为 `0`；报告只挂载到标定 Pod。不要把真实密钥写进模板或提交环境文件。
+
+```bash
+mkdir -p cloud-local
+cp cloud/argo/runtime.env.example cloud-local/argo-runtime.env
+# 编辑 cloud-local/argo-runtime.env 后执行；namespace 可按部署环境调整。
+kubectl create namespace store-vision-demo
+kubectl -n store-vision-demo create secret generic store-vision-runtime \
+  --from-env-file=cloud-local/argo-runtime.env --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n store-vision-demo create configmap store-vision-synthetic-report \
+  --from-file=synthetic-report.json=cloud-local/phase4-sample/synthetic-report.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n store-vision-demo apply -f cloud/argo/service-account.yaml -f cloud/argo/workflow-template.yaml
+kubectl -n store-vision-demo apply -f cloud/argo/ray-local.yaml
+kubectl -n store-vision-demo rollout status deployment/ray-head --timeout=3m
+```
+
+ConfigMap 与 `ray-local.yaml` 只供本机合成实验；真实标定可不创建该 ConfigMap，正式 Ray 集群由运行环境提供。模板 `arguments.parameters` 显式给出资源、Secret 名、各节点超时和重试上限默认值，整个 Workflow 最多运行两小时。拼接 Pod 强制要求 `SV_RAY_ADDRESS`，否则分支失败，不能把串行结果冒充 Ray。Ray worker 应安装相同代码版本并可访问同一 S3 凭据；若集群启用了 Ray token 认证，应通过本地 Secret 提供 `RAY_AUTH_TOKEN`。
+
+在两个终端分别启动 API 与同步器；不要为同一 Argo Job 启动旧 `-mode worker`。API 在提交时把镜像和 `stitch_profile` 存入 MySQL，同步器重启后仍使用提交时参数。`SV_ARGO_NAMESPACE` 与 `kubectl` 当前访问权限须指向同一个集群。
+
+```bash
+cd cloud
+set -a; . ./.env; set +a
+export SV_ARGO_NAMESPACE=store-vision-demo SV_ARGO_IMAGE=store-vision-cloud:1.0.11
+GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode api -listen 127.0.0.1:8080
+# 在第二个同样加载环境变量的终端：
+GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode argo-sync
+```
+
+用已上传的合成 Dataset（这里示例为 `phase4synthetic`）提交新 Job；每次新实验使用新的幂等键。响应 202 只说明 MySQL 建立 Job，不代表算法完成。最终成功要求拼接成功，且 2.5D 成功或因能力门禁明确 blocked；能力已就绪的任一分支失败则 Job 失败，另一分支已提交 Artifact 仍可查。
+
+```bash
+SNAPSHOT_URI="s3://$SV_S3_BUCKET/$SV_S3_PREFIX/manifests/snapshots/phase4synthetic/snapshot1/manifest.json"
+curl -sS -X POST http://127.0.0.1:8080/datasets \
+  -H 'Content-Type: application/json' -H 'X-Owner-ID: synthetic-owner' \
+  -d "{\"id\":\"phase4synthetic\",\"snapshot_id\":\"snapshot1\",\"snapshot_uri\":\"$SNAPSHOT_URI\"}"
+JOB_ID=$(curl -sS -X POST http://127.0.0.1:8080/jobs \
+  -H 'Content-Type: application/json' -H 'X-Owner-ID: synthetic-owner' \
+  -H 'Idempotency-Key: phase4-sample-001' \
+  -d '{"dataset_id":"phase4synthetic","backend":"argo","candidate":"estimated","stitch_profile":"synthetic-small"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+export JOB_ID
+curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID"
+curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID/workflow"
+kubectl -n store-vision-demo get workflows.argoproj.io "sv-$JOB_ID" -o wide
+kubectl -n store-vision-demo get pods -l "workflows.argoproj.io/workflow=sv-$JOB_ID"
+# 用上一行实际 Pod 名查看各阶段日志：
+kubectl -n store-vision-demo logs POD_NAME --all-containers=true
+curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID/stages"
+curl -sS -H 'X-Owner-ID: synthetic-owner' "http://127.0.0.1:8080/jobs/$JOB_ID/artifacts"
+```
+
+对象结果可以按 API 返回的 `publication_uri` 与每个 `manifest_uri` 使用同一 S3 环境读取。下列命令重新校验每个业务结果的资源字节并显示 Ray task 归属；`parallel_parts` 位于拼接业务 `manifest.json`。运行前在当前终端加载 `cloud/.env`，并保留 `JOB_ID` 环境变量。
+
+```bash
+cd ..
+PYTHONPATH=code code/.venv/bin/python - <<'PY'
+import json, os
+from store_vision.cloud_workspace import validate_artifact
+from store_vision.s3_object_store import S3ObjectStore
+store = S3ObjectStore.from_env()
+dataset, run = 'phase4synthetic', os.environ['JOB_ID']
+uri = store.manifest_uri('published', dataset, run, 'attempt1')
+summary = store.load_manifest(uri)
+source = store.load_manifest(summary['run_manifest_uri'])
+print('summary', summary['status'], summary['stages'])
+for name, artifact_uri in summary['artifacts'].items():
+    files = validate_artifact(store, store.load_manifest(artifact_uri), source)
+    business = json.loads(files['manifest.json'])
+    print(name, artifact_uri, len(files), business.get('parallel_parts', []))
+PY
+```
+
+2026-10-08 本机真实 Workflow `sv-d99266650a42b9b5f3f2b21ca42238f2` 和复验 Workflow `sv-d318d784bb5e24ffa98e7b5745b21b30` 均到 `Succeeded`；两个分支及汇总成功，Go/MySQL Job 为 `succeeded`、五个 Stage 为 `succeeded`。首个 Job 从 MinIO 重读 63 个 2.5D 文件和 25 个拼接文件全部通过合同校验，九个 Ray task ID 分布在两个 worker PID、一个 Ray 节点，融合 JPEG SHA-256 与 Phase 3 对照一致。两次 Ray Client 冷连接的首个拼接 Pod 都因服务端进程竞态失败，Argo 的一次有界重试成功；复现实验应检查 Workflow 节点列表，不能只看最终成功。另用不存在的合成快照验收了上游失败：Workflow `sv-49abd4715b60253bc0fdb3a03a4425b7` 为 `Failed`，Go/MySQL Job 为 `failed/upstream_failed`；verify Stage 失败，未启动的标定、两个分支和汇总均为 `blocked/upstream_failed`，没有 Artifact。
+
+2026-10-09 版号日期更新后，未固定间接依赖的重建镜像与前一成功镜像有五项依赖版本差异。Job `b2fb7efbf6a803f854581e8895981805` 的拼接在两次 Ray Client 连接中均失败：Workflow 汇总为 `Succeeded`，但 MySQL Job 正确为 `failed/branch_failed`，成功的 2.5D Artifact 仍可查询。固定云端依赖版本并重建后，Job `1ff4c99b00c96d01f62fcaf21054cf9d` 的 Workflow、MySQL Job 和五个 Stage 均为 `succeeded`，两个分支 Pod 首次成功；从 MinIO 重读的 63 个 2.5D 文件与 25 个拼接文件均通过校验，九个 Ray task ID 属于两个 worker PID，融合 JPEG SHA-256 与 Phase 3 对照一致。未单独定位五项依赖中哪一项导致连接故障，先前相同依赖版本仍发生过首次连接失败；因此 Ray Client 冷连接稳定性仍是边界。真实标定和生产集群未验收。Phase 4 定向 4 项、全量 Python 156 项与 Go 全量测试均通过。运行后可用下列命令复核合成阶段代码和控制面：
+
+```bash
+cd code
+PYTHONPYCACHEPREFIX=../cloud-local/pycache QT_QPA_PLATFORM=offscreen \
+  MPLCONFIGDIR=../cloud-local/matplotlib .venv/bin/python -m pytest -q tests/integration/test_cloud_pipeline.py
+cd ../cloud
+GOCACHE="$PWD/../cloud-local/go-cache" go test ./...
+```
+
+业务状态、重放与失败准则见[Phase 4 合同](../design/cloud-pipeline/contracts-phase4.md)。
+本机集群、Ray、MySQL/MinIO 和 API/同步器在本次验收后保持运行。结束实验时可停止 API/同步器，再执行 `kubectl -n store-vision-demo scale deployment/ray-head --replicas=0` 与 `docker compose -f cloud/compose.yaml stop`；保留 kind 集群、MinIO/MySQL 卷及忽略目录供复查。只有确认不再需要本机合成 Workflow 和对象数据后，才删除集群或卷。
 
 ## 数据与产物管理
 

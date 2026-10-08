@@ -1,5 +1,11 @@
 # Store Vision 操作手册
 
+## Phase 4 Argo 云端 Job
+
+在已配置 Kubernetes、Argo、Ray 和对象存储的环境中，先按[开发指南](development.md#phase-4-argo-dag-与双分支)冻结合成输入、部署模板并启动 Go API/同步器。提交 `backend=argo` 的 Job 后，HTTP 202 表示已建立业务身份；`GET /jobs/<id>/workflow` 可查 Workflow 名称，`GET /jobs/<id>/stages` 可查快照、标定、2.5D、拼接和汇总状态，`GET /jobs/<id>/artifacts` 可查已提交的独立结果。Workflow 节点与 Pod 日志用于定位具体执行失败。
+
+2.5D 和拼接从同一版本化中间层清单分别运行。能力不足的分支显示 `blocked` 及原因；能力已就绪但执行失败显示 `failed`。上游失败后未启动的标定、分支和汇总显示 `blocked/upstream_failed`。拼接成功且 2.5D 成功或因能力不足明确 blocked 时，Job 才显示 `succeeded`。一条分支失败时另一条已发布结果仍可查询，Job 显示 `failed`。结果 URI 指向对象存储中的清单，可按清单逐项校验资源字节。本机已用合成输入贯通真实 Kubernetes/Argo DAG、Ray 拼接、双 Artifact 与 MySQL 终态；这不代表真实标定数据或生产集群验收。
+
 ## Phase 3 可选 Ray 拼接
 
 云端执行器设置 `SV_RAY_ADDRESS` 并连接已启动的 Ray 时，拼接会在共同画布上逐相机生成分片。全部相机通过校验后才出现业务成功结果；单机失败可在新 attempt 重试。未设置该变量时维持串行路径，桌面界面也继续使用串行路径。启动命令、资源配置和合成对照见[开发指南](development.md#phase-3-ray-逐相机拼接)。

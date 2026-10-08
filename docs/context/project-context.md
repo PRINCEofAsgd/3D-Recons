@@ -1,5 +1,23 @@
 # 项目上下文
 
+## Step 8：云端 Phase 4 Argo DAG 与双下游业务分支（2026-10-08）
+
+### 目标与结果
+
+- 在 Phase 1～3 的真实快照、S3、MySQL 和 Ray 实现上新增 `cloud_pipeline` 独立容器阶段、Argo WorkflowTemplate 与 Go 可重放同步器。DAG 固定快照验证、全局标定/中间层、2.5D 与 Ray 拼接并行分支、汇总；跨 Pod 只传发布清单 URI 与 run SHA-256。两个消费者各自校验身份、候选、能力与参数，使用独立输出前缀。已发布且验证通过的同身份上游和分支可复用，错误数据集或候选拒绝。
+- API 支持 `backend=argo` 与固定 `stitch_profile`，MySQL 新增 backend、候选、镜像与 profile 记录及 Stage 失败明细。同步器每 5 秒查询 Argo Workflow，以 Job 版本条件更新终态；重复回报不能覆盖结果，失败 Job 仍能查询另一成功分支 Artifact。最终成功要求拼接成功且 2.5D 成功或由能力门禁明确 blocked。模板显式配置 Secret、镜像、Pod 资源、超时及每阶段最多一次重试；拼接 Pod 要求 Ray 地址。
+- 本次迭代于 2026-10-09 完成，当前版本为 `V1.0.11_20261009`。云端 Linux ARM64 镜像排除了不参与阶段命令的桌面 Qt，Workflow 资源参数改由 `podSpecPatch` 注入，独立 ServiceAccount 获得 executor 所需的最小回报权限，并新增仅供本机合成验收的 Ray head 清单。命令、部署与查询见[开发指南](../user/development.md#phase-4-argo-dag-与双分支)，合同与失败语义见[Phase 4 合同](../design/cloud-pipeline/contracts-phase4.md)。
+
+### 验证与边界
+
+- 本机 MySQL 8.4.10 应用 Phase 4 migration 并核对新列；原真实 MySQL 并发幂等测试通过。Go 单元测试覆盖 Workflow 身份参数、重复终态回报、分支部分成功与 API 部分结果查询。本次变更后 Phase 4 定向 4 项、全量 Python 合成回归 156 项及 Go 全量测试通过。WorkflowTemplate 已通过 Argo v4.1.4 的真实 CRD 服务端校验；资源 Quantity 占位符被 CRD 拒绝的问题已用 `podSpecPatch` 修复，标定 Pod 实际带 `2 CPU/4GiB` request 与 `4 CPU/8GiB` limit。
+- 本机 MinIO 使用合成快照，在独立 scratch 运行当时的 1.0.10 `calibrate → map25d/stitching → summarize`；run `phase4run2/attempt1` 的两个 Artifact 分别包含 63 与 25 个经重读校验的文件，融合 JPEG SHA-256 为 `5b8a491bee60d1716f458a793ad265b5bb815a1049c0f672bd5eab22897ca6ce`。Ray 九个相机 task 分布在两个 worker PID、一个物理节点；首次连接因新版本 Ray token 认证配置不一致失败，隔离本机实验统一认证模式后成功。合成报告只用于本地链路，不代表真实标定质量。
+- 本次在本机 kind `v0.33.0` / Kubernetes `v1.36.1` / Argo Workflows `v4.1.4` 建立真实集群；Docker Desktop 分配 12 GiB，Compose 的 MySQL/MinIO、单 Pod Ray 和 Go API/同步器同时运行。合成 Job `d99266650a42b9b5f3f2b21ca42238f2` 经 Go `POST /jobs` 创建真实 Workflow；verify、calibrate、map25d、ray-stitch、summarize 逻辑节点均 `Succeeded`，MySQL Job `succeeded` 且五个 Stage 均 `succeeded`。2.5D 和拼接分别发布 63、25 个逐对象校验通过的文件；九个 Ray task ID 分布在同一 Ray 节点的两个 worker PID，融合 JPEG SHA-256 与 Phase 3 串行对照一致。复验 Job `d318d784bb5e24ffa98e7b5745b21b30` 同样成功；两次 Ray Client 冷连接均先出现服务端进程竞态，拼接 Pod 在 Argo 的一次有界重试内成功，该不稳定性仍是后续运行边界。
+- 真实上游失败验收使用不存在的合成快照，Job `49abd4715b60253bc0fdb3a03a4425b7` 的 verify 重试耗尽、Workflow 为 `Failed`；MySQL Job 为 `failed/upstream_failed`，verify Stage 为 `failed`，未启动的标定、两个分支和汇总均为 `blocked/upstream_failed`，没有发布结果。此项修复了 Argo `Omitted` 原先被误记为 `pending`、未运行汇总被误记为 `invalid_summary` 的状态缺口；Go 回归新增对应测试。
+- 2026-10-09 重建并加载 `1.0.11` 云端镜像后，Ray Pod 内版本核对为 `V1.0.11_20261009`。未固定的间接依赖与前一成功镜像有五项版本差异；Job `b2fb7efbf6a803f854581e8895981805` 的 Workflow 到 `Succeeded`，但拼接 Pod 两次都因 Ray Client 服务端进程竞态失败；MySQL Job 正确结算为 `failed/branch_failed`，2.5D Stage 和 Artifact 仍为 `succeeded` 且可查，拼接与汇总为 `failed`。这也证明不能用 Workflow 总相位代替业务终态。
+- 将前一成功镜像的云端运行依赖版本固定在 `cloud/requirements-runtime.txt` 后重新构建，镜像内 `pip freeze` 与该镜像完全一致。新 Job `1ff4c99b00c96d01f62fcaf21054cf9d` 的 Workflow 和 MySQL Job 均为 `succeeded`，五个 Stage 全部成功且分支 Pod 无重试；从 MinIO 重读校验 63 个 2.5D 文件、25 个拼接文件，九个 Ray task ID 分布于两个 worker PID，融合 JPEG SHA-256 与 Phase 3 基线一致。间接依赖漂移与失败同时出现，但未单独定位具体依赖；Ray Client 冷连接在先前相同依赖镜像中仍出现过首次失败，继续作为运行边界。
+- 本机集群、Ray、MySQL/MinIO 及 API/同步器保留运行，供复查与继续合成实验；Kubernetes 单节点与 Ray 单 Pod 不代表物理多节点，真实共享标定、远程 S3、生产认证及 Phase 5 全量故障矩阵仍未验收。
+
 ## Step 7：云端 Phase 3 Ray 逐相机拼接（2026-10-06）
 
 ### 目标与结果

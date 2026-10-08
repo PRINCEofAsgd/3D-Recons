@@ -21,6 +21,7 @@
 - [云端 Phase 1 合同与验收](../design/cloud-pipeline/contracts-phase1.md)
 - [云端 Phase 2 一致性与状态合同](../design/cloud-pipeline/contracts-phase2.md)
 - [云端 Phase 3 Ray 分片合同](../design/cloud-pipeline/contracts-phase3.md)
+- [云端 Phase 4 Argo DAG 与双分支合同](../design/cloud-pipeline/contracts-phase4.md)
 
 ## 顶层目录
 
@@ -35,7 +36,7 @@
 │   ├── tests/
 │   ├── main.py
 │   └── pyproject.toml
-├── cloud/                       # Phase 2 Go API、worker、MySQL migration 与 Compose
+├── cloud/                       # Go API/worker/Argo 同步器、migration、Compose 与 WorkflowTemplate
 ├── data/
 │   ├── input/
 │   ├── intermediate/
@@ -61,6 +62,7 @@ store_vision/
 ├── ⭐️ s3_object_store.py          # S3 对象存储数据面实现
 ├── ⭐️ cloud_job_runner.py         # 基于对象存储的计算执行流程化
 ├── ⭐️ ray_stitching.py            # Ray 分布式计算框架下的逐相机并发计算
+├── ⭐️ cloud_pipeline.py           # K8s 编排调度 Worker 的 Argo 工作流
 ├── cli.py                         # CLI 与 GUI/headless 分派
 ├── config.py                      # 阈值和数据根配置
 ├── pipeline.py                    # 兼容 headless 流水线
@@ -143,6 +145,7 @@ pytest 只从 `tests` 收集，不读取 `data/` 或 `archive/`。
 `tests/unit/test_cloud_workspace.py` 用合成夹具验证快照、跨目录恢复、两个原业务消费者和合同拒绝条件。
 `tests/unit/test_s3_object_store.py` 用合成字节验证 S3 故障边界；`tests/integration/phase2_sample.py` 生成本地验收输入。`cloud/main_test.go` 验证控制面分支，`cloud/main_integration_test.go` 可对真实 MySQL 唯一约束执行并发提交实验。
 `tests/integration/test_ray_stitching.py` 用合成图片验证串行/Ray 一致性、两个 worker 进程、逐机失败重试、分片校验与不覆盖。
+`tests/integration/test_cloud_pipeline.py` 与 `tests/unit/test_cloud_pipeline_gate.py` 验证 Phase 4 跨 scratch 双业务输出、候选/哈希拒绝、阶段复用、分支失败及能力 blocked；`cloud/argo_sync_test.go` 验证提交参数、重复回报和部分结果查询。
 
 ## 数据合同与运行产物
 
@@ -189,6 +192,8 @@ Phase 2 远程对象键按配置前缀分为输入快照、attempt 对象、run/
 
 Phase 3 在 `attempts/<job>/<run>/<candidate>/<canvas_hash>/<camera>/<task_version>/<part_attempt>/` 下保存逐机 `npz` 与清单。Ray task 从对象存储按需读取本相机图片；驱动端校验全部必需分片后按稳定顺序复用原覆盖/融合逻辑。业务 manifest 增加 `parallel_parts` 来源记录；原串行格式继续可用。详见[Phase 3 合同](../design/cloud-pipeline/contracts-phase3.md)。
 
+Phase 4 的 `cloud/argo/workflow-template.yaml` 在 Kubernetes 中串联快照校验、全局中间层、两个业务分支与汇总；资源参数经 `podSpecPatch` 注入。`cloud/argo/service-account.yaml` 提供 executor 的最小回报权限，`cloud/argo/ray-local.yaml` 是仅供本机合成验收的 Ray head/Service。`cloud/requirements-runtime.txt` 固定云端镜像运行依赖，`cloud/Dockerfile` 在源码层之前安装依赖。`cloud_pipeline.py` 每节点从 S3 manifest 恢复所需资源；`cloud/argo_sync.go` 每 5 秒同步 Workflow 节点与终态到 MySQL。两个分支独立写 `manifests/artifacts/<dataset>/<run>/<attempt>/<branch>/manifest.json`；汇总写 `manifests/published/<dataset>/<run>/<attempt>/manifest.json`。详见[Phase 4 合同](../design/cloud-pipeline/contracts-phase4.md)。
+
 ## 程序入口
 
 ```text
@@ -208,9 +213,11 @@ store-vision / python -m store_vision
 
 `cloud_workspace` 为独立 Python API，不改 GUI/CLI 路由：输入预检 → 输入快照 → 本地物化 → 原共享标定结果发布 v2 → run 合同 → 跨目录恢复 v2 → 两个原消费者 → artifact 合同。已有清单的 `producer` 字段作为来源文本保留，读取时按合同字段校验，不要求等于当前模块名。`pipeline.py` 仍为兼容 headless 路径。
 
-Phase 2 调用链：`cloud_job_runner snapshot` → S3 快照；Go `/datasets`、`/jobs` → MySQL；独立 Go worker → `cloud_job_runner execute` → S3 attempt、清单与指针 → MySQL 终态 → `/jobs/<id>/artifacts`。本地 worker 在后续阶段可由 Argo 编排替换。
+Phase 2 默认 worker 调用链：`cloud_job_runner snapshot` → S3 快照；Go `/datasets`、`/jobs` → MySQL；独立 Go worker → `cloud_job_runner execute` → S3 attempt、清单与指针 → MySQL 终态 → `/jobs/<id>/artifacts`。Phase 4 的 `backend=argo` 走下述独立 DAG。
 
 Phase 3 可选调用链：`cloud_job_runner execute` → `prepare_stitching_runtime` 确定共同画布 → `ray_stitching.run_ray_stitching` 限流派发逐机 task → 分片清单与数组全量校验 → `run_parameter_stitching` 按相机顺序全局 reduce → 原 Phase 2 artifact/指针发布。无 `SV_RAY_ADDRESS` 时直接运行同一逐机函数的串行路径。
+
+Phase 4 调用链：Go `POST /jobs` → MySQL Argo Job → `argo_sync.go` 创建 Workflow → `cloud_pipeline verify/calibrate` → 已发布 run URI/哈希 → `map25d` 与 `stitching` 容器阶段（后者要求 Ray 地址）→ `summarize` 校验并发布独立结果/汇总 → Go 同步器条件提交 Job/Stage/Artifact → 查询 API。
 
 ## GUI 调用链
 
@@ -260,7 +267,7 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.9`，平台展示版号为 `V1.0.9_20261008`。修改时同步检查：
+当前代码版号为 `1.0.11`，平台展示版号为 `V1.0.11_20261009`。修改时同步检查：
 
 - `code/pyproject.toml`
 - `code/store_vision/__init__.py`

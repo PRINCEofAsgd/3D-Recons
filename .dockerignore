@@ -1,0 +1,18 @@
+# 云端镜像只带 Python 项目源码与云端依赖清单，避免本地数据、凭据和构建产物进入上下文。
+.git/
+.env
+.env.*
+**/.env
+**/.env.*
+data/
+archive/
+cloud-local/
+outputs/
+reports/
+code/.venv/
+code/build/
+code/dist/
+code/*.egg-info/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

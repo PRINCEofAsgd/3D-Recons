@@ -62,6 +62,10 @@ ray_spilled_objects/
 # Phase 2 本地 Compose 数据卷由 Docker 管理；宿主机 scratch 与密钥留在以下忽略目录。
 cloud/volumes/
 cloud/scratch/
+# Argo 本地 Secret 导出与临时 manifest 不进入正式交付。
+cloud/argo/local/
+cloud/argo/*.secret.yaml
+cloud/argo/*.secret.yml
 reports/
 code/output/
 code/output_*/

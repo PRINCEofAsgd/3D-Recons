@@ -92,6 +92,21 @@ func digest(datasetID, uri string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// requestDigest 把执行后端与候选纳入幂等身份；旧 worker 请求保持原摘要。
+func requestDigest(datasetID, uri, backend, candidate string) string {
+	if backend == "worker" && candidate == "estimated" {
+		return digest(datasetID, uri)
+	}
+	sum := sha256.Sum256([]byte(datasetID + "\n" + uri + "\n" + backend + "\n" + candidate))
+	return hex.EncodeToString(sum[:])
+}
+
+// argoDigest 将画布参数与镜像版本一并锁定在提交幂等键中。
+func argoDigest(datasetID, uri, candidate, profile, image string) string {
+	sum := sha256.Sum256([]byte(datasetID + "\n" + uri + "\nargo\n" + candidate + "\n" + profile + "\n" + image))
+	return hex.EncodeToString(sum[:])
+}
+
 // snapshotURI 限制注册请求只能引用当前桶和前缀中的快照。
 func (s *server) snapshotURI(datasetID, snapshotID string) string {
 	return fmt.Sprintf("s3://%s/%s/manifests/snapshots/%s/%s/manifest.json", s.bucket, s.prefix, datasetID, snapshotID)
@@ -144,7 +159,10 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DatasetID string `json:"dataset_id"`
+		DatasetID     string `json:"dataset_id"`
+		Backend       string `json:"backend"`
+		Candidate     string `json:"candidate"`
+		StitchProfile string `json:"stitch_profile"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -152,6 +170,42 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 	if !identity.MatchString(req.DatasetID) {
 		http.Error(w, "invalid dataset_id", 400)
 		return
+	}
+	if req.Backend == "" {
+		req.Backend = "worker"
+	}
+	if req.Candidate == "" {
+		req.Candidate = "estimated"
+	}
+	if req.StitchProfile == "" {
+		req.StitchProfile = "default"
+	}
+	if req.Backend != "worker" && req.Backend != "argo" {
+		http.Error(w, "invalid backend", 400)
+		return
+	}
+	// 当前共享标定只发布 estimated，不能接受一个尚不存在的候选。
+	if req.Candidate != "estimated" {
+		http.Error(w, "unsupported candidate", 400)
+		return
+	}
+	if req.StitchProfile != "default" && req.StitchProfile != "synthetic-small" {
+		http.Error(w, "unsupported stitch_profile", 400)
+		return
+	}
+	if req.Backend == "worker" && req.StitchProfile != "default" {
+		http.Error(w, "worker profile is fixed", 400)
+		return
+	}
+	image := ""
+	if req.Backend == "argo" {
+		image = os.Getenv("SV_ARGO_IMAGE")
+		imageName := image[strings.LastIndex(image, "/")+1:]
+		if image == "" || len(image) > 256 || strings.ContainsAny(image, " \t\r\n") ||
+			(!strings.Contains(imageName, ":") && !strings.Contains(imageName, "@sha256:")) || strings.HasSuffix(image, ":latest") {
+			http.Error(w, "SV_ARGO_IMAGE must be a versioned image reference", 503)
+			return
+		}
 	}
 	var uri string
 	err := s.db.QueryRowContext(r.Context(), `SELECT snapshot_uri FROM datasets WHERE id=? AND owner_id=?`, req.DatasetID, who).Scan(&uri)
@@ -163,7 +217,10 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database unavailable", 503)
 		return
 	}
-	hash := digest(req.DatasetID, uri)
+	hash := requestDigest(req.DatasetID, uri, req.Backend, req.Candidate)
+	if req.Backend == "argo" {
+		hash = argoDigest(req.DatasetID, uri, req.Candidate, req.StitchProfile, image)
+	}
 	id := newID()
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -171,9 +228,13 @@ func (s *server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO jobs(id,dataset_id,owner_id,idempotency_key,request_digest,input_manifest_uri) VALUES(?,?,?,?,?,?)`, id, req.DatasetID, who, key, hash, uri)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO jobs(id,dataset_id,owner_id,idempotency_key,request_digest,input_manifest_uri,backend,candidate,stitch_profile,image_ref) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, req.DatasetID, who, key, hash, uri, req.Backend, req.Candidate, req.StitchProfile, nullable(image))
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO stages(job_id,name,status) VALUES(?,'pipeline','pending')`, id)
+		stage := "pipeline"
+		if req.Backend == "argo" {
+			stage = "verify_snapshot"
+		}
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO stages(job_id,name,status) VALUES(?,?,'pending')`, id, stage)
 		if err != nil {
 			http.Error(w, "stage creation failed", 503)
 			return
@@ -265,10 +326,7 @@ func (s *server) jobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 3 && parts[2] == "artifacts" && r.Method == http.MethodGet {
-		if j.Status != "succeeded" {
-			respond(w, 202, map[string]any{"status": j.Status, "artifacts": []any{}})
-			return
-		}
+		// 部分成功分支也可查询，但只有已提交到 MySQL 的清单才公开。
 		rows, err := s.db.QueryContext(r.Context(), `SELECT name,attempt_id,manifest_uri FROM artifacts WHERE job_id=? ORDER BY name`, j.ID)
 		if err != nil {
 			http.Error(w, "database unavailable", 503)
@@ -284,7 +342,45 @@ func (s *server) jobs(w http.ResponseWriter, r *http.Request) {
 			}
 			items = append(items, map[string]string{"name": name, "attempt_id": attempt, "manifest_uri": uri})
 		}
-		respond(w, 200, map[string]any{"publication_uri": j.OutputManifestURI, "artifacts": items})
+		code := 200
+		if j.Status == "pending" || j.Status == "running" || j.Status == "cancel_requested" {
+			code = 202
+		}
+		respond(w, code, map[string]any{"status": j.Status, "publication_uri": j.OutputManifestURI, "artifacts": items})
+		return
+	}
+	if len(parts) == 3 && parts[2] == "stages" && r.Method == http.MethodGet {
+		rows, err := s.db.QueryContext(r.Context(), `SELECT name,status,attempt_id,manifest_uri,failure_type,failure_detail FROM stages WHERE job_id=? ORDER BY name`, j.ID)
+		if err != nil {
+			http.Error(w, "database unavailable", 503)
+			return
+		}
+		defer rows.Close()
+		items := []map[string]any{}
+		for rows.Next() {
+			var name, status string
+			var attempt, uri, reason, detail sql.NullString
+			if err := rows.Scan(&name, &status, &attempt, &uri, &reason, &detail); err != nil {
+				http.Error(w, "database unavailable", 503)
+				return
+			}
+			items = append(items, map[string]any{"name": name, "status": status, "attempt_id": attempt.String, "manifest_uri": uri.String, "failure_type": reason.String, "failure_detail": detail.String})
+		}
+		respond(w, 200, map[string]any{"stages": items})
+		return
+	}
+	if len(parts) == 3 && parts[2] == "workflow" && r.Method == http.MethodGet {
+		var backend string
+		var name sql.NullString
+		if err := s.db.QueryRowContext(r.Context(), `SELECT backend,workflow_name FROM jobs WHERE id=? AND owner_id=?`, j.ID, who).Scan(&backend, &name); err != nil {
+			http.Error(w, "database unavailable", 503)
+			return
+		}
+		if backend != "argo" {
+			http.Error(w, "job has no Argo workflow", 404)
+			return
+		}
+		respond(w, 200, map[string]any{"name": name.String, "namespace": argoEnv("SV_ARGO_NAMESPACE", "default")})
 		return
 	}
 	http.Error(w, "not found", 404)
@@ -303,14 +399,14 @@ func (s *server) routes() http.Handler {
 func (s *server) claim(ctx context.Context) (job, uint64, bool, error) {
 	var id, who string
 	var version uint64
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,status_version FROM jobs WHERE (status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6)) ORDER BY created_at LIMIT 1`).Scan(&id, &who, &version)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,status_version FROM jobs WHERE backend='worker' AND ((status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6))) ORDER BY created_at LIMIT 1`).Scan(&id, &who, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return job{}, 0, false, nil
 	}
 	if err != nil {
 		return job{}, 0, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='running',status_version=status_version+1,attempts=attempts+1,lease_until=DATE_ADD(NOW(6),INTERVAL 90 SECOND),failure_type=NULL WHERE id=? AND status_version=? AND ((status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6))) AND attempts<3`, id, version)
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='running',status_version=status_version+1,attempts=attempts+1,lease_until=DATE_ADD(NOW(6),INTERVAL 90 SECOND),failure_type=NULL WHERE id=? AND status_version=? AND backend='worker' AND ((status='pending' AND (lease_until IS NULL OR lease_until<NOW(6))) OR (status='running' AND lease_until<NOW(6))) AND attempts<3`, id, version)
 	if err != nil {
 		return job{}, 0, false, err
 	}
@@ -329,11 +425,11 @@ func (s *server) claim(ctx context.Context) (job, uint64, bool, error) {
 
 // settleAbandoned 将未启动的取消请求及超过重试上限的过期租约收束为终态。
 func (s *server) settleAbandoned(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='failed',failure_type='cancelled',status_version=status_version+1,lease_until=NULL WHERE status='cancel_requested' AND (attempts=0 OR lease_until<NOW(6))`)
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='failed',failure_type='cancelled',status_version=status_version+1,lease_until=NULL WHERE backend='worker' AND status='cancel_requested' AND (attempts=0 OR lease_until<NOW(6))`)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE jobs SET status='failed',failure_type='lease_expired',status_version=status_version+1,lease_until=NULL WHERE status='running' AND attempts>=3 AND lease_until<NOW(6)`)
+	_, err = s.db.ExecContext(ctx, `UPDATE jobs SET status='failed',failure_type='lease_expired',status_version=status_version+1,lease_until=NULL WHERE backend='worker' AND status='running' AND attempts>=3 AND lease_until<NOW(6)`)
 	if err != nil {
 		return err
 	}
@@ -494,7 +590,7 @@ func (s *server) worker(ctx context.Context, python, scratchRoot, report string,
 	}
 }
 func main() {
-	mode := flag.String("mode", "api", "api or worker")
+	mode := flag.String("mode", "api", "api, worker or argo-sync")
 	address := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	python := flag.String("python", "python3", "Python with store_vision installed")
 	scratch := flag.String("scratch", "../cloud-local/scratch", "worker scratch root")
@@ -521,6 +617,9 @@ func main() {
 	}
 	if *mode == "worker" {
 		log.Fatal(s.worker(context.Background(), *python, *scratch, *report, *failAfterUpload))
+	}
+	if *mode == "argo-sync" {
+		log.Fatal(s.argoSync(context.Background()))
 	}
 	if *mode != "api" {
 		log.Fatal("invalid mode")

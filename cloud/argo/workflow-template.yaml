@@ -1,0 +1,208 @@
+# Phase 4 编排示例：镜像、Secret、资源、超时和重试均可由部署方审查。
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: store-vision-pipeline
+spec:
+  entrypoint: pipeline
+  serviceAccountName: store-vision-workflow
+  activeDeadlineSeconds: 7200
+  arguments:
+    parameters:
+      - name: dataset_id
+      - name: job_id
+      - name: run_id
+      - name: attempt_id
+      - name: candidate
+      - name: snapshot_uri
+      - name: image
+        value: store-vision-cloud:1.0.11
+      - name: stitch_profile
+        value: default
+      - name: runtime_secret
+        value: store-vision-runtime
+      - name: retry_limit
+        value: "1"
+      - name: verify_timeout
+        value: 10m
+      - name: calibrate_timeout
+        value: 45m
+      - name: branch_timeout
+        value: 45m
+      - name: summarize_timeout
+        value: 15m
+      - name: verify_cpu_request
+        value: 250m
+      - name: verify_cpu_limit
+        value: "1"
+      - name: verify_memory_request
+        value: 512Mi
+      - name: verify_memory_limit
+        value: 1Gi
+      - name: calibrate_cpu_request
+        value: "2"
+      - name: calibrate_cpu_limit
+        value: "4"
+      - name: calibrate_memory_request
+        value: 4Gi
+      - name: calibrate_memory_limit
+        value: 8Gi
+      - name: branch_cpu_request
+        value: "1"
+      - name: branch_cpu_limit
+        value: "2"
+      - name: branch_memory_request
+        value: 2Gi
+      - name: branch_memory_limit
+        value: 4Gi
+      - name: summarize_cpu_request
+        value: 250m
+      - name: summarize_cpu_limit
+        value: "1"
+      - name: summarize_memory_request
+        value: 512Mi
+      - name: summarize_memory_limit
+        value: 1Gi
+  templates:
+    - name: pipeline
+      dag:
+        failFast: false
+        tasks:
+          - name: verify-snapshot
+            template: verify-snapshot
+          - name: calibrate-and-publish-intermediate
+            depends: verify-snapshot.Succeeded
+            template: calibrate
+          - name: map25d-branch
+            depends: calibrate-and-publish-intermediate.Succeeded
+            template: branch
+            arguments:
+              parameters:
+                - name: branch
+                  value: map25d
+                - name: run_uri
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-uri}}"
+                - name: run_sha
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-sha}}"
+          - name: ray-stitch-branch
+            depends: calibrate-and-publish-intermediate.Succeeded
+            template: branch
+            arguments:
+              parameters:
+                - name: branch
+                  value: stitching
+                - name: run_uri
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-uri}}"
+                - name: run_sha
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-sha}}"
+          - name: summarize-job-state
+            depends: (map25d-branch.Succeeded || map25d-branch.Failed || map25d-branch.Errored) && (ray-stitch-branch.Succeeded || ray-stitch-branch.Failed || ray-stitch-branch.Errored)
+            template: summarize
+            arguments:
+              parameters:
+                - name: run_uri
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-uri}}"
+                - name: run_sha
+                  value: "{{tasks.calibrate-and-publish-intermediate.outputs.parameters.run-sha}}"
+                - name: map_phase
+                  value: "{{tasks.map25d-branch.status}}"
+                - name: stitch_phase
+                  value: "{{tasks.ray-stitch-branch.status}}"
+    - name: verify-snapshot
+      timeout: "{{workflow.parameters.verify_timeout}}"
+      # CRD 的 Quantity 字段不接受模板占位符；运行时通过 PodSpecPatch 注入资源。
+      podSpecPatch: |
+        {"containers":[{"name":"main","resources":{"requests":{"cpu":"{{workflow.parameters.verify_cpu_request}}","memory":"{{workflow.parameters.verify_memory_request}}"},"limits":{"cpu":"{{workflow.parameters.verify_cpu_limit}}","memory":"{{workflow.parameters.verify_memory_limit}}"}}}]}
+      retryStrategy:
+        limit: "{{workflow.parameters.retry_limit}}"
+        retryPolicy: OnFailure
+      container:
+        image: "{{workflow.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        command: [python, -m, store_vision.cloud_pipeline]
+        args: [verify, --dataset-id, "{{workflow.parameters.dataset_id}}", --run-id, "{{workflow.parameters.run_id}}", --attempt-id, "{{workflow.parameters.attempt_id}}", --candidate, "{{workflow.parameters.candidate}}", --snapshot-uri, "{{workflow.parameters.snapshot_uri}}"]
+        envFrom:
+          - secretRef:
+              name: "{{workflow.parameters.runtime_secret}}"
+    - name: calibrate
+      timeout: "{{workflow.parameters.calibrate_timeout}}"
+      podSpecPatch: |
+        {"containers":[{"name":"main","resources":{"requests":{"cpu":"{{workflow.parameters.calibrate_cpu_request}}","memory":"{{workflow.parameters.calibrate_memory_request}}"},"limits":{"cpu":"{{workflow.parameters.calibrate_cpu_limit}}","memory":"{{workflow.parameters.calibrate_memory_limit}}"}}}]}
+      retryStrategy:
+        limit: "{{workflow.parameters.retry_limit}}"
+        retryPolicy: OnFailure
+      outputs:
+        parameters:
+          - name: run-uri
+            valueFrom: {path: /tmp/run-uri}
+          - name: run-sha
+            valueFrom: {path: /tmp/run-sha}
+      container:
+        image: "{{workflow.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        command: [python, -m, store_vision.cloud_pipeline]
+        args: [calibrate, --dataset-id, "{{workflow.parameters.dataset_id}}", --run-id, "{{workflow.parameters.run_id}}", --attempt-id, "{{workflow.parameters.attempt_id}}", --candidate, "{{workflow.parameters.candidate}}", --snapshot-uri, "{{workflow.parameters.snapshot_uri}}", --scratch, /tmp/sv, --synthetic-report, /etc/store-vision/synthetic-report.json, --run-uri-output, /tmp/run-uri, --run-sha-output, /tmp/run-sha]
+        envFrom:
+          - secretRef:
+              name: "{{workflow.parameters.runtime_secret}}"
+        volumeMounts:
+          - name: synthetic-report
+            mountPath: /etc/store-vision
+            readOnly: true
+      volumes:
+        - name: synthetic-report
+          configMap:
+            name: store-vision-synthetic-report
+            optional: true
+    - name: branch
+      inputs:
+        parameters:
+          - name: branch
+          - name: run_uri
+          - name: run_sha
+      timeout: "{{workflow.parameters.branch_timeout}}"
+      podSpecPatch: |
+        {"containers":[{"name":"main","resources":{"requests":{"cpu":"{{workflow.parameters.branch_cpu_request}}","memory":"{{workflow.parameters.branch_memory_request}}"},"limits":{"cpu":"{{workflow.parameters.branch_cpu_limit}}","memory":"{{workflow.parameters.branch_memory_limit}}"}}}]}
+      retryStrategy:
+        limit: "{{workflow.parameters.retry_limit}}"
+        retryPolicy: OnFailure
+      outputs:
+        parameters:
+          - name: stage-result
+            valueFrom: {path: /tmp/stage-result.json}
+      container:
+        image: "{{workflow.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        command: [python, -m, store_vision.cloud_pipeline]
+        args: ["{{inputs.parameters.branch}}", --dataset-id, "{{workflow.parameters.dataset_id}}", --run-id, "{{workflow.parameters.run_id}}", --attempt-id, "{{workflow.parameters.attempt_id}}", --candidate, "{{workflow.parameters.candidate}}", --snapshot-uri, "{{workflow.parameters.snapshot_uri}}", --run-uri, "{{inputs.parameters.run_uri}}", --run-sha256, "{{inputs.parameters.run_sha}}", --stitch-profile, "{{workflow.parameters.stitch_profile}}", --scratch, /tmp/sv]
+        envFrom:
+          - secretRef:
+              name: "{{workflow.parameters.runtime_secret}}"
+        env:
+          - name: SV_REQUIRE_RAY
+            value: "1"
+    - name: summarize
+      inputs:
+        parameters:
+          - name: run_uri
+          - name: run_sha
+          - name: map_phase
+          - name: stitch_phase
+      timeout: "{{workflow.parameters.summarize_timeout}}"
+      podSpecPatch: |
+        {"containers":[{"name":"main","resources":{"requests":{"cpu":"{{workflow.parameters.summarize_cpu_request}}","memory":"{{workflow.parameters.summarize_memory_request}}"},"limits":{"cpu":"{{workflow.parameters.summarize_cpu_limit}}","memory":"{{workflow.parameters.summarize_memory_limit}}"}}}]}
+      retryStrategy:
+        limit: "{{workflow.parameters.retry_limit}}"
+        retryPolicy: OnFailure
+      outputs:
+        parameters:
+          - name: stage-result
+            valueFrom: {path: /tmp/stage-result.json}
+      container:
+        image: "{{workflow.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        command: [python, -m, store_vision.cloud_pipeline]
+        args: [summarize, --dataset-id, "{{workflow.parameters.dataset_id}}", --run-id, "{{workflow.parameters.run_id}}", --attempt-id, "{{workflow.parameters.attempt_id}}", --candidate, "{{workflow.parameters.candidate}}", --snapshot-uri, "{{workflow.parameters.snapshot_uri}}", --run-uri, "{{inputs.parameters.run_uri}}", --run-sha256, "{{inputs.parameters.run_sha}}", --map-phase, "{{inputs.parameters.map_phase}}", --stitch-phase, "{{inputs.parameters.stitch_phase}}", --stitch-profile, "{{workflow.parameters.stitch_profile}}"]
+        envFrom:
+          - secretRef:
+              name: "{{workflow.parameters.runtime_secret}}"
