@@ -36,7 +36,7 @@ from store_vision.data.loader import (
 from store_vision.resolution import canonicalize_homographies
 
 
-EXPERIMENT_VERSION = "V1.0.11_20261009"
+EXPERIMENT_VERSION = "V1.0.13_20261010"
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ import (
 func syntheticArgoJob() argoJob {
 	return argoJob{ID: strings.Repeat("a", 32), Dataset: "synthetic", Candidate: "estimated",
 		Snapshot: "s3://synthetic/phase4/manifests/snapshots/synthetic/snapshot1/manifest.json",
-		Workflow: "sv-" + strings.Repeat("a", 32), Status: "running", Profile: "synthetic-small", Image: "store-vision-cloud:1.0.11"}
+		Workflow: "sv-" + strings.Repeat("a", 32), Status: "running", Profile: "synthetic-small", Image: "store-vision-cloud:1.0.13"}
 }
 
 func TestArgoWorkflowIdentityParameters(t *testing.T) {
@@ -52,7 +52,7 @@ func TestArgoWorkflowIdentityParameters(t *testing.T) {
 	}
 	for key, expected := range map[string]string{"dataset_id": j.Dataset, "job_id": j.ID, "run_id": j.ID,
 		"attempt_id": "attempt1", "candidate": "estimated", "snapshot_uri": j.Snapshot,
-		"image": "store-vision-cloud:1.0.11", "stitch_profile": "synthetic-small"} {
+		"image": "store-vision-cloud:1.0.13", "stitch_profile": "synthetic-small"} {
 		if got[key] != expected {
 			t.Fatalf("%s=%q", key, got[key])
 		}
@@ -67,7 +67,7 @@ func TestArgoWorkflowIdentityParameters(t *testing.T) {
 }
 
 func TestArgoSubmitAndPartialArtifactQuery(t *testing.T) {
-	t.Setenv("SV_ARGO_IMAGE", "store-vision-cloud:1.0.11")
+	t.Setenv("SV_ARGO_IMAGE", "store-vision-cloud:1.0.13")
 	s, mock, db := mockServer(t)
 	defer db.Close()
 	bad := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestArgoSubmitAndPartialArtifactQuery(t *testing.T) {
 	uri := s.snapshotURI("synthetic", "snapshot1")
 	mock.ExpectQuery("SELECT snapshot_uri FROM datasets").WithArgs("synthetic", "synthetic-owner").WillReturnRows(sqlmock.NewRows([]string{"snapshot_uri"}).AddRow(uri))
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO jobs").WithArgs(sqlmock.AnyArg(), "synthetic", "synthetic-owner", "synthetic-key", argoDigest("synthetic", uri, "estimated", "synthetic-small", "store-vision-cloud:1.0.11"), uri, "argo", "estimated", "synthetic-small", "store-vision-cloud:1.0.11").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO jobs").WithArgs(sqlmock.AnyArg(), "synthetic", "synthetic-owner", "synthetic-key", argoDigest("synthetic", uri, "estimated", "synthetic-small", "store-vision-cloud:1.0.13"), uri, "argo", "estimated", "synthetic-small", "store-vision-cloud:1.0.13").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO stages").WithArgs(sqlmock.AnyArg(), "verify_snapshot").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	w := httptest.NewRecorder()

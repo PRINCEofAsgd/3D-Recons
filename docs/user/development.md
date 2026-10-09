@@ -278,8 +278,8 @@ kubectl -n argo rollout status deployment/workflow-controller --timeout=5m
 cd cloud
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u "$MYSQL_USER" "$MYSQL_DATABASE"' < migrations/002_phase4.sql
 cd ..
-docker build -f cloud/Dockerfile -t store-vision-cloud:1.0.11 .
-cloud-local/bin/kind load docker-image store-vision-cloud:1.0.11 --name store-vision
+docker build -f cloud/Dockerfile -t store-vision-cloud:1.0.13 .
+cloud-local/bin/kind load docker-image store-vision-cloud:1.0.13 --name store-vision
 kubectl get workflows.argoproj.io -A
 # 合成输入只从测试夹具生成；首次执行使用新的输出目录。
 set -a; . ./cloud/.env; set +a
@@ -313,7 +313,7 @@ ConfigMap 与 `ray-local.yaml` 只供本机合成实验；真实标定可不创�
 ```bash
 cd cloud
 set -a; . ./.env; set +a
-export SV_ARGO_NAMESPACE=store-vision-demo SV_ARGO_IMAGE=store-vision-cloud:1.0.11
+export SV_ARGO_NAMESPACE=store-vision-demo SV_ARGO_IMAGE=store-vision-cloud:1.0.13
 GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode api -listen 127.0.0.1:8080
 # 在第二个同样加载环境变量的终端：
 GOCACHE="$PWD/../cloud-local/go-cache" go run . -mode argo-sync

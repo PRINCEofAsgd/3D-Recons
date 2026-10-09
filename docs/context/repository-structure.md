@@ -11,9 +11,6 @@
 - [开发指南](../user/development.md)
 - [操作手册](../user/user.md)
 - [历史阶段摘要](../record/project-demo-initialization.md)
-- [macOS 版本说明](../user/macos-release-notes.md)
-- [Windows 版本说明](../user/windows-release-notes.md)
-- [移动平台版本说明](../user/mobile-release-notes.md)
 - [需求评审](../design/algorithm/01_requirements_review.md)
 - [算法设计](../design/algorithm/02_algorithm_design.md)
 - [测试计划](../design/algorithm/03_test_plan.md)
@@ -30,13 +27,28 @@
 ├── AGENTS.md
 ├── README.md
 ├── .gitignore
+├── .dockerignore                   # 云端镜像构建上下文排除规则
 ├── code/
 │   ├── store_vision/
-│   │   └── examples/              # 可随包分发的配置示例
+│   │   └── examples/               # 可随包分发的配置示例
 │   ├── tests/
 │   ├── main.py
 │   └── pyproject.toml
-├── cloud/                       # Go API/worker/Argo 同步器、migration、Compose 与 WorkflowTemplate
+├── cloud/
+│   ├── main.go                     # Go API、默认 worker 与进程模式入口
+│   ├── ⭐️ argo_sync.go             # Argo Workflow 提交等 K8s API
+│   ├── compose.yaml                # 本地 MySQL 与 MinIO
+│   ├── .env.example                # 本地控制面与 Compose 环境变量示例
+│   ├── Dockerfile                  # Python 云端阶段镜像
+│   ├── requirements-runtime.txt    # 已验收云端运行依赖版本
+│   ├── migrations/
+│   │   ├── 001_phase2.sql      # Dataset、Job、Stage、Artifact 基础表
+│   │   └── 002_phase4.sql      # Argo 后端与阶段失败明细
+│   └── argo/
+│       ├── workflow-template.yaml  # 快照、标定、双分支与汇总 DAG
+│       ├── service-account.yaml    # Workflow executor 最小权限
+│       ├── ray-local.yaml          # 仅供本机合成验收的 Ray 服务
+│       └── runtime.env.example     # Pod Secret 键名与资源配置示例
 ├── data/
 │   ├── input/
 │   ├── intermediate/
@@ -51,6 +63,14 @@
 ```
 
 `code/` 是唯一 Python 项目根目录，`store_vision/` 是可安装包，`tests/` 与包并列。配置示例位于包内 `examples/`，可随安装包分发；`docs/design/algorithm/` 保存四份算法专项文档，`docs/design/cloud-pipeline/` 保存云端阶段设计与合同。`data/` 的真实输入和运行产物默认被 Git 忽略，只跟踪结构说明与 `apple_exam` 示例；`archive/` 可跟踪但正式代码和测试不得依赖。
+
+## cloud/ 控制面与部署资源
+
+`main.go` 是同一个 Go 程序的 `api`、`worker` 和 `argo-sync` 模式入口：API 注册 Dataset、提交和查询 Job，默认 worker 领取 MySQL Job 并调用 `python -m store_vision.cloud_job_runner`；Argo 模式由 `argo_sync.go` 创建或恢复 Workflow，将节点状态、汇总清单和 Artifact 条件写回 MySQL。`go.mod`、`go.sum` 固定 Go 模块依赖。`main_test.go`、`main_integration_test.go` 和 `argo_sync_test.go` 分别覆盖控制面逻辑、真实 MySQL 并发约束及 Argo 同步状态。
+
+`compose.yaml` 仅提供本机 MySQL、MinIO 及其 Docker 卷，`cloud/.env.example` 是本机连接和凭据键名示例；实际 `cloud/.env` 不跟踪。`migrations/001_phase2.sql` 建立基础业务表，`002_phase4.sql` 在其上增加 Argo 后端字段与 `blocked` 阶段状态，旧数据库按编号应用增量迁移。数据库内容和对象文件保存在本地卷，对应的 Python scratch、kind 二进制、运行环境文件与临时输出保存在被忽略的 `cloud-local/`，均不是仓库源码。
+
+`Dockerfile` 从 `code/` 构建无桌面 Qt 的 Python 阶段镜像，先安装 `requirements-runtime.txt` 固定的运行依赖。`argo/workflow-template.yaml` 让各 Pod 调用 `code/store_vision/cloud_pipeline.py`，通过已发布清单 URI 串联阶段；`service-account.yaml` 提供 executor 的最小回报权限。`argo/runtime.env.example` 只列 Pod Secret 所需键名，实际 Secret 在本地 Kubernetes 中创建。`ray-local.yaml` 仅提供本机合成验收的 Ray head 与 Service；Argo 控制器和正式 Ray 集群由部署环境提供。部署与启动命令见[开发指南](../user/development.md#phase-4-argo-dag-与双分支)。
 
 ## 源码模块
 
@@ -267,10 +287,11 @@ SfM 失败不会修改原图、人工标定或父中间层，也不会自动触�
 
 ## 版号位置
 
-当前代码版号为 `1.0.11`，平台展示版号为 `V1.0.11_20261009`。修改时同步检查：
+当前包版号为 `1.0.13`，实验展示版号为 `V1.0.13_20261010`。修改时同步检查：
 
 - `code/pyproject.toml`
 - `code/store_vision/__init__.py`
 - `code/store_vision/calibration/shared_calibration.py`
-- `docs/user/*-release-notes.md`
+- `cloud/argo/workflow-template.yaml` 与 `cloud/argo/ray-local.yaml` 的镜像 tag
+- `cloud/argo_sync_test.go` 的镜像参数夹具及 `docs/user/development.md` 的构建命令
 - `docs/context/project-context.md`
